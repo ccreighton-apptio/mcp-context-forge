@@ -18,6 +18,25 @@ COPY vite.config.js ./
 RUN npm run vite:build
 
 ###############################################################################
+# Node.js builder stage - builds Tailwind CSS
+###############################################################################
+FROM registry.access.redhat.com/ubi10/nodejs-20-minimal:1-77 AS node-builder
+
+WORKDIR /build
+
+# Copy only files needed for CSS build
+COPY package.json package-lock.json* ./
+COPY tailwind.config.js postcss.config.js ./
+COPY mcpgateway/static/css/tailwind.src.css ./mcpgateway/static/css/
+COPY mcpgateway/templates/ ./mcpgateway/templates/
+COPY mcpgateway/static/ ./mcpgateway/static/
+
+# Install dependencies and build CSS
+RUN npm ci --omit=dev && \
+    npm run build:css && \
+    echo "✅ Tailwind CSS built successfully"
+
+###############################################################################
 # Main application stage
 ###############################################################################
 FROM registry.access.redhat.com/ubi10/ubi-minimal:10.1-1772441549
@@ -57,6 +76,9 @@ COPY . /app
 
 # Copy frontend build artifacts from frontend-builder stage
 COPY --from=frontend-builder /app/mcpgateway/static/ /app/mcpgateway/static/
+
+# Copy Rust plugin wheels from builder (if any exist)
+COPY --from=rust-builder /build/plugins_rust/target/wheels/ /tmp/rust-wheels/
 
 # Create virtual environment, upgrade pip and install dependencies using uv for speed
 # Including observability packages for OpenTelemetry support and plugins from PyPI
