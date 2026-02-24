@@ -63,8 +63,7 @@ from mcpgateway.observability import create_span, set_span_attribute, set_span_e
 from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, ResourceHookType, ResourcePostFetchPayload, ResourcePreFetchPayload
 from mcpgateway.schemas import ResourceCreate, ResourceMetrics, ResourceRead, ResourceSubscription, ResourceUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
-from mcpgateway.services.base_service import BaseService
-from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, get_content_security_service
+from mcpgateway.services.content_security import ContentSizeError, get_content_security_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -505,13 +504,10 @@ class ResourceService(BaseService):
             content_to_validate = ""
 
             # Extract content from resource for validation
-            # Use raw bytes for accurate size measurement to prevent bypass via non-UTF-8 content
             if hasattr(resource, "content") and resource.content:
                 if isinstance(resource.content, bytes):
-                    # Validate using raw bytes to get accurate size
-                    content_to_validate = resource.content
+                    content_to_validate = resource.content.decode("utf-8", errors="ignore")
                 else:
-                    # Convert string to bytes for consistent size measurement
                     content_to_validate = str(resource.content)
 
             content_security.validate_resource_size(content=content_to_validate, uri=resource.uri, user_email=created_by, ip_address=created_from_ip)
@@ -3156,7 +3152,7 @@ class ResourceService(BaseService):
             )
             raise ie
         except ContentSizeError as cse:
-            db.rollback()
+
             structured_logger.log(
                 level="ERROR",
                 message=f"Resource content size limit exceeded: {cse.actual_size} bytes (max: {cse.max_size} bytes)",

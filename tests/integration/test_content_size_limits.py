@@ -137,6 +137,11 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test.token.size_limits"}
 
 
+
+import pytest
+from fastapi import status
+
+
 class TestResourceSizeLimits:
     """Test resource content size limits."""
 
@@ -183,26 +188,26 @@ class TestResourceSizeLimits:
             },
             headers=auth_headers
         )
-
+        
         # Should return 413 Payload Too Large
         assert response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
+        
         # Verify error response structure
         data = response.json()
         assert "detail" in data
         detail = data["detail"]
-
+        
         # Verify error includes size information
         assert "actual_size" in detail
         assert "max_size" in detail
         assert "error" in detail
         assert "message" in detail
-
+        
         # Verify size values
         assert detail["actual_size"] == 200000
         assert detail["max_size"] == 102400
         assert detail["actual_size"] > detail["max_size"]
-
+        
         # Verify error message is clear
         assert "size limit exceeded" in detail["error"].lower()
 
@@ -283,26 +288,26 @@ class TestPromptSizeLimits:
             },
             headers=auth_headers
         )
-
+        
         # Should return 413 Payload Too Large
         assert response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
+        
         # Verify error response structure
         data = response.json()
         assert "detail" in data
         detail = data["detail"]
-
+        
         # Verify error includes size information
         assert "actual_size" in detail
         assert "max_size" in detail
         assert "error" in detail
         assert "message" in detail
-
+        
         # Verify size values
         assert detail["actual_size"] == 20000
         assert detail["max_size"] == 10240
         assert detail["actual_size"] > detail["max_size"]
-
+        
         # Verify error message is clear
         assert "size limit exceeded" in detail["error"].lower()
 
@@ -355,7 +360,7 @@ class TestSizeValidationConsistency:
         )
         assert create_response.status_code == status.HTTP_201_CREATED
         resource_id = create_response.json()["id"]
-
+        
         # Try to update with oversized content
         large_content = "x" * 200000  # 200KB
         update_response = client.put(
@@ -363,10 +368,10 @@ class TestSizeValidationConsistency:
             json={"content": large_content},
             headers=auth_headers
         )
-
+        
         # Update should also be rejected with 413
         assert update_response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
+        
         # Verify error structure
         data = update_response.json()
         assert "detail" in data
@@ -388,7 +393,7 @@ class TestSizeValidationConsistency:
         )
         assert create_response.status_code == status.HTTP_201_CREATED
         prompt_id = create_response.json()["id"]
-
+        
         # Try to update with oversized template
         large_template = "x" * 20000  # 20KB
         update_response = client.put(
@@ -396,10 +401,10 @@ class TestSizeValidationConsistency:
             json={"template": large_template},
             headers=auth_headers
         )
-
+        
         # Update should also be rejected with 413
         assert update_response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
+        
         # Verify error structure
         data = update_response.json()
         assert "detail" in data
@@ -422,10 +427,10 @@ class TestErrorMessageClarity:
             },
             headers=auth_headers
         )
-
+        
         data = response.json()
         detail = data["detail"]
-
+        
         # Error message should be human-readable
         assert "message" in detail
         message = detail["message"]
@@ -446,10 +451,10 @@ class TestErrorMessageClarity:
             },
             headers=auth_headers
         )
-
+        
         data = response.json()
         detail = data["detail"]
-
+        
         # Error message should be human-readable
         assert "message" in detail
         message = detail["message"]
@@ -463,14 +468,14 @@ class TestErrorMessageClarity:
 
 def test_bulk_resource_registration_with_oversized_content(test_app, client, auth_headers):
     """Test that bulk resource registration validates content size for each resource.
-
+    
     This test verifies that when registering multiple resources in bulk,
     oversized resources are rejected and reported in the error statistics.
     """
     from mcpgateway.schemas import ResourceCreate
     from mcpgateway.services.resource_service import ResourceService
     from mcpgateway.db import get_db
-
+    
     # Create a mix of valid and oversized resources
     resources = [
         ResourceCreate(
@@ -498,10 +503,10 @@ def test_bulk_resource_registration_with_oversized_content(test_app, client, aut
             description="Another oversized resource"
         ),
     ]
-
+    
     # Get database session
     db = next(get_db())
-
+    
     # Call bulk registration
     service = ResourceService()
     import asyncio
@@ -514,12 +519,12 @@ def test_bulk_resource_registration_with_oversized_content(test_app, client, aut
             conflict_strategy="skip"
         )
     )
-
+    
     # Verify results
     assert result["created"] == 2, "Should create 2 valid resources"
     assert result["failed"] == 2, "Should fail 2 oversized resources"
     assert len(result["errors"]) == 2, "Should have 2 error messages"
-
+    
     # Check error messages contain size information
     errors_text = " ".join(result["errors"])
     assert "200000" in errors_text or "150000" in errors_text, "Errors should mention actual sizes"
@@ -530,7 +535,7 @@ def test_bulk_resource_registration_with_oversized_content(test_app, client, aut
 
 def test_prompt_update_with_oversized_template(test_app, client, auth_headers):
     """Test that updating a prompt with an oversized template returns 413.
-
+    
     This test verifies that the update_prompt method validates template size
     and rejects oversized templates with appropriate error response.
     """
@@ -547,7 +552,7 @@ def test_prompt_update_with_oversized_template(test_app, client, auth_headers):
     assert response.status_code == 201
     prompt_data = response.json()
     prompt_id = prompt_data["id"]
-
+    
     # Try to update with oversized template (20KB)
     oversized_template = "x" * 20000
     response = client.put(
@@ -557,13 +562,13 @@ def test_prompt_update_with_oversized_template(test_app, client, auth_headers):
         },
         headers=auth_headers
     )
-
+    
     # Should return 413 Payload Too Large
     assert response.status_code == 413
-
+    
     data = response.json()
     detail = data["detail"]
-
+    
     # Verify error details
     assert "message" in detail
     assert "actual_size" in detail
@@ -572,7 +577,7 @@ def test_prompt_update_with_oversized_template(test_app, client, auth_headers):
     assert detail["max_size"] == 10240
     assert "Prompt template" in detail["message"]
     assert "exceeds" in detail["message"].lower()
-
+    
     # Verify the prompt was not updated
     response = client.get(f"/api/prompts/{prompt_id}", headers=auth_headers)
     assert response.status_code == 200
@@ -582,7 +587,7 @@ def test_prompt_update_with_oversized_template(test_app, client, auth_headers):
 
 def test_prompt_update_with_valid_template(test_app, client, auth_headers):
     """Test that updating a prompt with a valid-sized template succeeds.
-
+    
     This test verifies that templates within the size limit can be updated successfully.
     """
     # First create a prompt
@@ -598,7 +603,7 @@ def test_prompt_update_with_valid_template(test_app, client, auth_headers):
     assert response.status_code == 201
     prompt_data = response.json()
     prompt_id = prompt_data["id"]
-
+    
     # Update with valid-sized template (5KB)
     new_template = "y" * 5000
     response = client.put(
@@ -608,10 +613,10 @@ def test_prompt_update_with_valid_template(test_app, client, auth_headers):
         },
         headers=auth_headers
     )
-
+    
     # Should succeed
     assert response.status_code == 200
-
+    
     # Verify the prompt was updated
     response = client.get(f"/api/prompts/{prompt_id}", headers=auth_headers)
     assert response.status_code == 200
@@ -621,7 +626,7 @@ def test_prompt_update_with_valid_template(test_app, client, auth_headers):
 
 def test_resource_update_with_oversized_content(test_app, client, auth_headers):
     """Test that updating a resource with oversized content returns 413.
-
+    
     This test verifies that the update_resource method validates content size
     and rejects oversized content with appropriate error response.
     """
@@ -639,7 +644,7 @@ def test_resource_update_with_oversized_content(test_app, client, auth_headers):
     assert response.status_code == 201
     resource_data = response.json()
     resource_id = resource_data["id"]
-
+    
     # Try to update with oversized content (200KB)
     oversized_content = "x" * 200000
     response = client.put(
@@ -649,13 +654,13 @@ def test_resource_update_with_oversized_content(test_app, client, auth_headers):
         },
         headers=auth_headers
     )
-
+    
     # Should return 413 Payload Too Large
     assert response.status_code == 413
-
+    
     data = response.json()
     detail = data["detail"]
-
+    
     # Verify error details
     assert "message" in detail
     assert "actual_size" in detail
@@ -664,7 +669,7 @@ def test_resource_update_with_oversized_content(test_app, client, auth_headers):
     assert detail["max_size"] == 102400
     assert "Resource content" in detail["message"]
     assert "exceeds" in detail["message"].lower()
-
+    
     # Verify the resource was not updated
     response = client.get(f"/api/resources/{resource_id}", headers=auth_headers)
     assert response.status_code == 200
@@ -674,7 +679,7 @@ def test_resource_update_with_oversized_content(test_app, client, auth_headers):
 
 def test_resource_update_with_valid_content(test_app, client, auth_headers):
     """Test that updating a resource with valid-sized content succeeds.
-
+    
     This test verifies that content within the size limit can be updated successfully.
     """
     # First create a resource
@@ -691,7 +696,7 @@ def test_resource_update_with_valid_content(test_app, client, auth_headers):
     assert response.status_code == 201
     resource_data = response.json()
     resource_id = resource_data["id"]
-
+    
     # Update with valid-sized content (50KB)
     new_content = "y" * 50000
     response = client.put(
@@ -701,10 +706,10 @@ def test_resource_update_with_valid_content(test_app, client, auth_headers):
         },
         headers=auth_headers
     )
-
+    
     # Should succeed
     assert response.status_code == 200
-
+    
     # Verify the resource was updated
     response = client.get(f"/api/resources/{resource_id}", headers=auth_headers)
     assert response.status_code == 200

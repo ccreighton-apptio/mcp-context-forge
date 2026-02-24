@@ -12741,17 +12741,6 @@ async def admin_add_resource(request: Request, db: Session = Depends(get_db), us
         if isinstance(ex, ContentSizeError):
             LOGGER.error(f"ContentSizeError in admin_add_resource: {ex}")
             return ORJSONResponse(content={"message": str(ex), "success": False}, status_code=413)
-        if isinstance(ex, ContentTypeError):
-            LOGGER.error(f"ContentTypeError in admin_add_resource: {ex}")
-            return ORJSONResponse(
-                content={
-                    "message": str(ex),
-                    "success": False,
-                    "mime_type": ex.mime_type,
-                    "allowed_types": ex.allowed_types,
-                },
-                status_code=415,
-            )
         LOGGER.error(f"Error in admin_add_resource: {ex}")
         return ORJSONResponse(content={"message": str(ex), "success": False}, status_code=500)
 
@@ -12870,18 +12859,7 @@ async def admin_edit_resource(
             return ORJSONResponse(status_code=409, content={"message": str(ex), "success": False})
         if isinstance(ex, ContentSizeError):
             LOGGER.error(f"ContentSizeError in admin_edit_resource: {ex}")
-            return ORJSONResponse(status_code=413, content={"message": str(ex), "success": False})
-        if isinstance(ex, ContentTypeError):
-            LOGGER.error(f"ContentTypeError in admin_edit_resource: {ex}")
-            return ORJSONResponse(
-                status_code=415,
-                content={
-                    "message": str(ex),
-                    "success": False,
-                    "mime_type": ex.mime_type,
-                    "allowed_types": ex.allowed_types,
-                },
-            )
+            return ORJSONResponse(status_code=409, content={"message": str(ex), "success": False})
         LOGGER.error(f"Error in admin_edit_resource: {ex}")
         return ORJSONResponse(content={"message": str(ex), "success": False}, status_code=500)
 
@@ -13113,16 +13091,6 @@ async def admin_add_prompt(request: Request, db: Session = Depends(get_db), user
         if isinstance(ex, PromptNameConflictError):
             LOGGER.error(f"PromptNameConflictError in admin_add_prompt: {ex}")
             return ORJSONResponse(status_code=409, content={"message": str(ex), "success": False})
-        if isinstance(ex, PromptArgumentsJSONError):
-            LOGGER.error(f"PromptArgumentsJSONError in admin_add_prompt: {ex}")
-            return ORJSONResponse(
-                status_code=422,
-                content={
-                    "message": f"Invalid JSON in {ex.field_name}: {ex.json_error}",
-                    "field": ex.field_name,
-                    "success": False,
-                },
-            )
         if isinstance(ex, ContentSizeError):
             LOGGER.error(f"ContentSizeError in admin_add_prompt: {ex}")
             return ORJSONResponse(status_code=413, content={"message": str(ex), "success": False})
@@ -13234,16 +13202,6 @@ async def admin_edit_prompt(
         if isinstance(ex, PromptNameConflictError):
             LOGGER.error(f"PromptNameConflictError in admin_edit_prompt: {ex}")
             return ORJSONResponse(status_code=409, content={"message": str(ex), "success": False})
-        if isinstance(ex, PromptArgumentsJSONError):
-            LOGGER.error(f"PromptArgumentsJSONError in admin_edit_prompt: {ex}")
-            return ORJSONResponse(
-                status_code=422,
-                content={
-                    "message": f"Invalid JSON in {ex.field_name}: {ex.json_error}",
-                    "field": ex.field_name,
-                    "success": False,
-                },
-            )
         if isinstance(ex, ContentSizeError):
             LOGGER.error(f"ContentSizeError in admin_edit_prompt: {ex}")
             return ORJSONResponse(status_code=413, content={"message": str(ex), "success": False})

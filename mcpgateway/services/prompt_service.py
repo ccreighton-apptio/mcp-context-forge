@@ -49,7 +49,6 @@ from mcpgateway.observability import create_span, set_span_attribute, set_span_e
 from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, PromptHookType, PromptPosthookPayload, PromptPrehookPayload
 from mcpgateway.schemas import PromptCreate, PromptMetrics, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
-from mcpgateway.services.base_service import BaseService
 from mcpgateway.services.content_security import ContentSizeError, get_content_security_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
