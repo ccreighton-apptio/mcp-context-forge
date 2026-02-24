@@ -5763,10 +5763,7 @@ async def create_resource(
         raise HTTPException(status_code=409, detail=ErrorFormatter.format_database_error(e))
     except ContentSizeError as e:
         logger.error(f"Content size exceeded in creating resource: {e}")
-        raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
-    except ContentTypeError as e:
-        logger.error(f"MIME type not allowed in creating resource: {e}")
-        raise HTTPException(status_code=415, detail={"error": "Unsupported Media Type", "message": str(e), "mime_type": e.mime_type, "allowed_types": e.allowed_types})
+        return ORJSONResponse(status_code=413, content={"detail": str(e)})
 
 
 @resource_router.get("/{resource_id}")
@@ -5949,10 +5946,7 @@ async def update_resource(
         raise HTTPException(status_code=409, detail=str(e))
     except ContentSizeError as e:
         logger.error(f"Content size exceeded in updating resource: {e}")
-        raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
-    except ContentTypeError as e:
-        logger.error(f"MIME type not allowed in updating resource: {e}")
-        raise HTTPException(status_code=415, detail={"error": "Unsupported Media Type", "message": str(e), "mime_type": e.mime_type, "allowed_types": e.allowed_types})
+        return ORJSONResponse(status_code=413, content={"detail": str(e)})
     db.commit()
     db.close()
     await invalidate_resource_cache(resource_id)
@@ -6282,13 +6276,7 @@ async def create_prompt(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ErrorFormatter.format_database_error(e))
         if isinstance(e, ContentSizeError):
             logger.error(f"Content size exceeded in creating prompt: {e}")
-            raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
-        if isinstance(e, ContentPatternError):
-            logger.error(f"Malicious pattern detected in creating prompt: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "Malicious pattern detected", "message": str(e), "violation_type": e.violation_type, "pattern_matched": e.pattern_matched, "content_type": e.content_type},
-            )
+            return ORJSONResponse(status_code=413, content={"detail": str(e)})
         # For any other unexpected errors, return a 500 Internal Server Error
         logger.error(f"Unexpected error while creating prompt: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred while creating the prompt")
@@ -6484,14 +6472,8 @@ async def update_prompt(
             # If there is a general prompt error, return a 400 Bad Request error
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         if isinstance(e, ContentSizeError):
-            logger.error(f"Content size exceeded in updating prompt: {e}")
-            raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
-        if isinstance(e, ContentPatternError):
-            logger.error(f"Malicious pattern detected in updating prompt: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "Malicious pattern detected", "message": str(e), "violation_type": e.violation_type, "pattern_matched": e.pattern_matched, "content_type": e.content_type},
-            )
+            logger.error(f"Content size exceeded in in updating prompt: {e}")
+            return ORJSONResponse(status_code=413, content={"detail": str(e)})
         # For any other unexpected errors, return a 500 Internal Server Error
         logger.error(f"Unexpected error while updating prompt: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred while updating the prompt")
