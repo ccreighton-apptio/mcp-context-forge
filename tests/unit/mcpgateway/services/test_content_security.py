@@ -27,8 +27,8 @@ class TestFormatBytes:
 
     def test_format_bytes_less_than_kb(self):
         """Test formatting bytes less than 1KB."""
-        assert _format_bytes(500) == "500 bytes"
-        assert _format_bytes(1023) == "1023 bytes"
+        assert _format_bytes(500) == "500 B"
+        assert _format_bytes(1023) == "1023 B"
 
     def test_format_bytes_kb(self):
         """Test formatting kilobytes."""
@@ -51,7 +51,7 @@ class TestFormatBytes:
 
     def test_format_bytes_zero(self):
         """Test formatting zero bytes."""
-        assert _format_bytes(0) == "0 bytes"
+        assert _format_bytes(0) == "0 B"
 
 
 class TestSanitizePiiForLogging:
