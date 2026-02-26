@@ -2166,9 +2166,9 @@ class TestResourceServiceContentSizeError:
         """Test that ContentSizeError is caught and re-raised during resource registration."""
         # First-Party
         from mcpgateway.services.content_security import ContentSizeError
-
+        
         mock_db.execute = MagicMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
-
+        
         # Mock get_content_security_service to return a mock that raises ContentSizeError
         mock_security_service = MagicMock()
         mock_security_service.validate_resource_size.side_effect = ContentSizeError(
@@ -2176,12 +2176,12 @@ class TestResourceServiceContentSizeError:
             actual_size=150000,
             max_size=102400
         )
-
+        
         with patch("mcpgateway.services.resource_service.get_content_security_service", return_value=mock_security_service):
             # Create a resource with large content
             large_resource = sample_resource_create
             large_resource.content = "x" * 150000  # 150KB content
-
+            
             with pytest.raises(ContentSizeError) as exc_info:
                 await resource_service.register_resource(
                     mock_db,
@@ -2189,7 +2189,7 @@ class TestResourceServiceContentSizeError:
                     created_by="user@example.com",
                     owner_email="user@example.com",
                 )
-
+            
             # Verify the error details
             assert exc_info.value.actual_size == 150000
             assert exc_info.value.max_size == 102400
@@ -2204,7 +2204,7 @@ class TestResourceServiceContentSizeError:
         mock_resource.owner_email = "user@example.com"
         mock_db.get = MagicMock(return_value=mock_resource)
         mock_db.execute = MagicMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
-
+        
         # Mock get_content_security_service to return a mock that raises ContentSizeError
         mock_security_service = MagicMock()
         mock_security_service.validate_resource_size.side_effect = ContentSizeError(
@@ -2212,14 +2212,14 @@ class TestResourceServiceContentSizeError:
             actual_size=150000,
             max_size=102400
         )
-
+        
         with patch("mcpgateway.services.resource_service.get_content_security_service", return_value=mock_security_service):
             # Update with large content
             update = ResourceUpdate(content="x" * 150000)  # 150KB content
-
+            
             with pytest.raises(ContentSizeError) as exc_info:
                 await resource_service.update_resource(mock_db, 1, update)
-
+            
             # Verify the error details
             assert exc_info.value.actual_size == 150000
             assert exc_info.value.max_size == 102400

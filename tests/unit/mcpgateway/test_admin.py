@@ -2944,6 +2944,7 @@ class TestAdminPromptRoutes:
         resp = await admin_add_prompt(mock_request, mock_db, user={"email": "test-user", "db": mock_db})
         assert resp.status_code == 413
 
+
     @patch.object(PromptService, "update_prompt")
     async def test_admin_edit_prompt_name_change(self, mock_update_prompt, mock_request, mock_db):
         """Test editing prompt with name change."""
