@@ -2520,6 +2520,7 @@ async def plugin_exception_handler(_request: Request, exc: PluginError):
     json_rpc_error = PydanticJSONRPCError(code=status_code, message="Plugin Error: " + message, data=error_details)
     return ORJSONResponse(status_code=200, content={"error": json_rpc_error.model_dump()})
 
+
 @app.exception_handler(ContentSizeError)
 async def content_size_exception_handler(_request: Request, exc: ContentSizeError):
     """Handle content size limit violations globally.
@@ -2531,17 +2532,7 @@ async def content_size_exception_handler(_request: Request, exc: ContentSizeErro
     Returns:
         ORJSONResponse: A 413 Payload Too Large response with structured error details.
     """
-    return ORJSONResponse(
-        status_code=413,
-        content={
-            "detail": {
-                "error": f"{exc.content_type} size limit exceeded",
-                "message": str(exc),
-                "actual_size": exc.actual_size,
-                "max_size": exc.max_size
-            }
-        }
-    )
+    return ORJSONResponse(status_code=413, content={"detail": {"error": f"{exc.content_type} size limit exceeded", "message": str(exc), "actual_size": exc.actual_size, "max_size": exc.max_size}})
 
 
 @app.exception_handler(ContentTypeError)
@@ -2556,80 +2547,7 @@ async def content_type_exception_handler(_request: Request, exc: ContentTypeErro
         ORJSONResponse: A 415 Unsupported Media Type response with error details.
     """
     return ORJSONResponse(
-        status_code=415,
-        content={
-            "detail": {
-                "error": "Unsupported MIME type",
-                "message": str(exc),
-                "mime_type": exc.mime_type,
-                "allowed_types": exc.allowed_types[:5]  # Show first 5 for brevity
-            }
-        }
-    )
-
-
-
-@app.exception_handler(ContentTypeError)
-async def content_type_exception_handler(_request: Request, exc: ContentTypeError):
-    """Handle MIME type validation failures globally.
-
-    Args:
-        _request: The incoming request (unused, required by FastAPI handler interface).
-        exc: The ContentTypeError with mime_type and allowed_types.
-
-    Returns:
-        ORJSONResponse: A 415 Unsupported Media Type response with error details.
-    """
-    return ORJSONResponse(
-        status_code=415,
-        content={
-            "detail": {
-                "error": "Unsupported MIME type",
-                "message": str(exc),
-                "mime_type": exc.mime_type,
-                "allowed_types": exc.allowed_types[:5],  # Limit to first 5
-            }
-        },
-    )
-
-
-@app.exception_handler(ContentPatternError)
-async def content_pattern_exception_handler(_request: Request, exc: ContentPatternError):
-    """Handle malicious pattern detection failures globally.
-
-    This handler catches ContentPatternError exceptions raised by the
-    ContentSecurityService when malicious patterns are detected in
-    user-submitted content (resources or prompts).
-
-    Args:
-        _request: The incoming request (unused, required by FastAPI handler interface).
-        exc: The ContentPatternError with pattern details and violation type.
-
-    Returns:
-        ORJSONResponse: A 400 Bad Request response with error details.
-
-    Example Response:
-        {
-            "detail": {
-                "error": "Malicious pattern detected",
-                "message": "Malicious pattern detected: XSS attack pattern '<script>' found in content",
-                "violation_type": "xss",
-                "pattern_matched": "<script[^>]*>",
-                "content_type": "resource"
-            }
-        }
-    """
-    return ORJSONResponse(
-        status_code=400,
-        content={
-            "detail": {
-                "error": "Malicious pattern detected",
-                "message": str(exc),
-                "violation_type": exc.violation_type,
-                "pattern_matched": exc.pattern_matched,
-                "content_type": exc.content_type,
-            }
-        },
+        status_code=415, content={"detail": {"error": "Unsupported MIME type", "message": str(exc), "mime_type": exc.mime_type, "allowed_types": exc.allowed_types[:5]}}  # Show first 5 for brevity
     )
 
 
