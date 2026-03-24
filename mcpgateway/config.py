@@ -90,7 +90,6 @@ def _normalize_env_list_vars() -> None:
         "SSO_GOOGLE_ADMIN_DOMAINS",
         "SSO_ENTRA_ADMIN_GROUPS",
         "LOG_DETAILED_SKIP_ENDPOINTS",
-        "TOOL_DESCRIPTION_FORBIDDEN_PATTERNS",
         "CONTENT_ALLOWED_RESOURCE_MIMETYPES",
     ]
     for key in keys:
@@ -1619,6 +1618,7 @@ class Settings(BaseSettings):
             "application/xml",
             "application/yaml",
             "application/pdf",
+            "application/octet-stream",
             "image/png",
             "image/jpeg",
             "image/gif",
@@ -1629,7 +1629,7 @@ class Settings(BaseSettings):
             "video/mp4",
             "video/webm",
         ],
-        description="Allowed MIME types for resources. In strict mode, only types explicitly listed here are accepted. Vendor types (application/x-*, text/x-*) and suffix types (+json, +xml) must be explicitly added if needed.",
+        description="Allowed MIME types for resources. Vendor types (application/x-*, text/x-*) and structured-syntax suffix types (e.g. application/vnd.api+json) are always permitted regardless of this list.",
     )
     content_strict_mime_validation: bool = Field(
         default=False,

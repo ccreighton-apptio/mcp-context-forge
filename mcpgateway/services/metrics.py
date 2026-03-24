@@ -108,14 +108,7 @@ content_size_violations_counter = Counter(
 content_type_violations_counter = Counter(
     "content_type_violations_total",
     "Total number of MIME type violations",
-    ["content_type"],  # "resource" or "prompt" — rejected type is in logs, not labels (unbounded cardinality)
-)
-
-# MCP Auth Cache Metrics
-mcp_auth_cache_events_counter = Counter(
-    "mcp_auth_cache_events_total",
-    "Total number of MCP auth cache events by outcome",
-    ["outcome"],
+    ["content_type", "mime_type"],  # content_type: "resource" or "prompt", mime_type: the rejected type
 )
 
 # OAuth / JWKS access-token verification on oauth_enabled virtual servers.

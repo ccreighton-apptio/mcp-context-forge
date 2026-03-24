@@ -63,7 +63,7 @@ from mcpgateway.observability import create_span, set_span_attribute, set_span_e
 from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, ResourceHookType, ResourcePostFetchPayload, ResourcePreFetchPayload
 from mcpgateway.schemas import ResourceCreate, ResourceMetrics, ResourceRead, ResourceSubscription, ResourceUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
-from mcpgateway.services.content_security import ContentSizeError, get_content_security_service
+from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, get_content_security_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -515,15 +515,10 @@ class ResourceService(BaseService):
 
             content_security.validate_resource_size(content=content_to_validate, uri=resource.uri, user_email=created_by, ip_address=created_from_ip)
 
-            # MIME type resolution priority:
-            # 1. User-provided type (caller explicitly declares the content type)
-            # 2. URI-detected type (fallback when user omits the field)
-            # 3. Content-based fallback (text/plain for str, application/octet-stream for bytes)
-            if resource.mime_type:
-                mime_type = resource.mime_type
-            else:
+            # Detect mime type if not provided (needed for validation)
+            mime_type: str | None = resource.mime_type
+            if not mime_type:
                 mime_type = self._detect_mime_type(resource.uri, resource.content)
-                logger.info(f"Auto-detected MIME type for {resource.uri}: {mime_type}")
 
             # Validate MIME type against allowlist
             content_security.validate_resource_mime_type(
@@ -824,16 +819,9 @@ class ResourceService(BaseService):
                                 ip_address=created_from_ip,
                             )
 
-                        # MIME type resolution (same priority as register_resource):
-                        # user-provided > URI-detected > content-based fallback
-                        if getattr(resource, "mime_type", None):
-                            bulk_mime_type = resource.mime_type
-                        else:
-                            bulk_mime_type = self._detect_mime_type(resource.uri, getattr(resource, "content", "") or "")
-
                         # Validate MIME type against allowlist
                         content_security.validate_resource_mime_type(
-                            mime_type=bulk_mime_type,
+                            mime_type=getattr(resource, "mime_type", None),
                             uri=resource.uri,
                             user_email=created_by,
                             ip_address=created_from_ip,
@@ -3018,6 +3006,15 @@ class ResourceService(BaseService):
                     ip_address=modified_from_ip,
                 )
 
+                # Validate MIME type if provided
+                if resource_update.mime_type:
+                    content_security.validate_resource_mime_type(
+                        mime_type=resource_update.mime_type,
+                        uri=resource_update.uri or resource.uri,
+                        user_email=modified_by or user_email,
+                        ip_address=modified_from_ip,
+                    )
+
                 # Determine content storage
                 is_text = resource.mime_type and resource.mime_type.startswith("text/") or isinstance(resource_update.content, str)
 
@@ -3169,7 +3166,7 @@ class ResourceService(BaseService):
             )
             raise cse
         except ContentTypeError as cte:
-            db.rollback()
+
             structured_logger.log(
                 level="ERROR",
                 message=f"Resource MIME type not allowed: {cte.mime_type}",

@@ -15,7 +15,7 @@ from issue #538.
 import hashlib
 import logging
 import threading
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 # First-Party
 from mcpgateway.config import settings
@@ -27,21 +27,11 @@ try:
 except ImportError:
     # Metrics not available in test environment - create no-op counters
     class NoOpCounter:
-        """No-op counter for test environments where metrics are unavailable."""
-
-        def labels(self, **_kwargs):
-            """Return self to allow method chaining.
-
-            Args:
-                **_kwargs: Arbitrary keyword arguments (ignored)
-
-            Returns:
-                self: Returns self for method chaining
-            """
+        def labels(self, **kwargs):
             return self
 
-        def inc(self, _amount=1):
-            """No-op increment method."""
+        def inc(self, amount=1):
+            pass
 
     content_size_violations_counter = NoOpCounter()
     content_type_violations_counter = NoOpCounter()
@@ -227,6 +217,9 @@ class ContentSecurityService:
         actual_size = len(content_bytes)
 
         if actual_size > self.max_resource_size:
+            # Increment Prometheus metric
+            content_size_violations_counter.labels(content_type="resource").inc()
+
             # Log security violation with sanitized PII
             sanitized = _sanitize_pii_for_logging(user_email, ip_address)
             logger.warning(
@@ -261,6 +254,9 @@ class ContentSecurityService:
         actual_size = len(template_bytes)
 
         if actual_size > self.max_prompt_size:
+            # Increment Prometheus metric
+            content_size_violations_counter.labels(content_type="prompt").inc()
+
             # Log security violation with sanitized PII
             sanitized = _sanitize_pii_for_logging(user_email, ip_address)
             logger.warning("Prompt size limit exceeded", extra={"actual_size": actual_size, "max_size": self.max_prompt_size, "content_type": "prompt", "name_provided": name is not None, **sanitized})
@@ -277,11 +273,10 @@ class ContentSecurityService:
     ) -> None:
         """Validate a resource MIME type against the configured allowlist.
 
-        When :attr:`~mcpgateway.config.Settings.content_strict_mime_validation`
-        is ``True``, only MIME types explicitly listed in the allowlist are accepted.
-        This includes vendor types (``application/x-*``, ``text/x-*``) and
-        structured-syntax suffix types (e.g. ``application/vnd.api+json``) which
-        must be explicitly added to the allowlist if needed.
+        Vendor types (``application/x-*``, ``text/x-*``) and structured-syntax
+        suffix types (e.g. ``application/vnd.api+json``) are always permitted
+        regardless of the allowlist, matching the behaviour of
+        :meth:`~mcpgateway.common.validators.SecurityValidator.validate_mime_type`.
 
         When :attr:`~mcpgateway.config.Settings.content_strict_mime_validation`
         is ``False`` the method logs a warning but does **not** raise, enabling
@@ -300,7 +295,7 @@ class ContentSecurityService:
 
         Examples:
             >>> service = ContentSecurityService()
-            >>> service.validate_resource_mime_type("text/plain")  # OK if in allowlist
+            >>> service.validate_resource_mime_type("text/plain")  # OK
             >>> service.validate_resource_mime_type(None)          # OK - no type declared
             >>> from unittest.mock import patch
             >>> with patch("mcpgateway.services.content_security.settings") as mock_settings:
@@ -311,50 +306,43 @@ class ContentSecurityService:
             ...     except ContentTypeError as e:
             ...         print("blocked:", e.mime_type)
             blocked: application/evil
-            >>> # Vendor types must be explicitly in allowlist
-            >>> with patch("mcpgateway.services.content_security.settings") as mock_settings:
-            ...     mock_settings.content_strict_mime_validation = True
-            ...     mock_settings.content_allowed_resource_mimetypes = ["text/plain"]
-            ...     try:
-            ...         service.validate_resource_mime_type("application/x-custom")
-            ...     except ContentTypeError as e:
-            ...         print("vendor type blocked:", e.mime_type)
-            vendor type blocked: application/x-custom
         """
         # Allow absent MIME types - callers may omit the field legitimately
         if not mime_type:
             return
 
+        # Honour the feature flag: log-only mode for safe migration
+        if not settings.content_strict_mime_validation:
+            logger.debug("MIME type validation disabled via CONTENT_STRICT_MIME_VALIDATION")
+            return
+
         allowed_types: List[str] = settings.content_allowed_resource_mimetypes
-        strict = settings.content_strict_mime_validation
 
-        # Strip parameters from MIME type for comparison (e.g., "text/plain; charset=utf-8" -> "text/plain")
-        base_mime_type = mime_type.split(";")[0].strip()
-
-        # Fast path: exact match in allowlist (check both full and base MIME type)
-        if mime_type in allowed_types or base_mime_type in allowed_types:
+        # Fast path: exact match in allowlist
+        if mime_type in allowed_types:
             logger.debug("Resource MIME type validation passed: %s", mime_type)
             return
 
-        # Violation detected — always increment metric and log regardless of mode.
-        # In strict mode, also raise to block the request.
-        content_type_violations_counter.labels(content_type="resource").inc()
+        # Always permit vendor types and structured-syntax suffix types to
+        # avoid breaking legitimate content that is not in the default list.
+        if mime_type.startswith(("application/x-", "text/x-")) or "+" in mime_type:
+            logger.debug("Resource MIME type permitted (vendor/suffix): %s", mime_type)
+            return
+
+        # Validation failed - increment metric, log with sanitized PII, and raise
+        content_type_violations_counter.labels(content_type="resource", mime_type=mime_type).inc()
 
         sanitized = _sanitize_pii_for_logging(user_email, ip_address)
         logger.warning(
-            "Resource MIME type not in allowlist%s",
-            " (log-only mode, not blocking)" if not strict else "",
+            "Resource MIME type validation failed",
             extra={
                 "mime_type": mime_type,
                 "allowed_count": len(allowed_types),
                 "uri_provided": uri is not None,
-                "strict": strict,
                 **sanitized,
             },
         )
-
-        if strict:
-            raise ContentTypeError(mime_type, allowed_types)
+        raise ContentTypeError(mime_type, allowed_types)
 
 
 # Singleton instance with thread-safe initialization

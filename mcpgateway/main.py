@@ -5724,6 +5724,9 @@ async def create_resource(
     except ContentSizeError as e:
         logger.error(f"Content size exceeded in creating resource: {e}")
         raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
+    except ContentTypeError as e:
+        logger.error(f"MIME type not allowed in creating resource: {e}")
+        raise HTTPException(status_code=415, detail={"error": "Unsupported Media Type", "message": str(e), "mime_type": e.mime_type, "allowed_types": e.allowed_types})
 
 
 @resource_router.get("/{resource_id}")
@@ -5907,6 +5910,9 @@ async def update_resource(
     except ContentSizeError as e:
         logger.error(f"Content size exceeded in updating resource: {e}")
         raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
+    except ContentTypeError as e:
+        logger.error(f"MIME type not allowed in updating resource: {e}")
+        raise HTTPException(status_code=415, detail={"error": "Unsupported Media Type", "message": str(e), "mime_type": e.mime_type, "allowed_types": e.allowed_types})
     db.commit()
     db.close()
     await invalidate_resource_cache(resource_id)
