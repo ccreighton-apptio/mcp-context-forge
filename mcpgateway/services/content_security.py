@@ -15,7 +15,7 @@ from issue #538.
 import hashlib
 import logging
 import threading
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 # First-Party
 from mcpgateway.config import settings
@@ -23,33 +23,18 @@ from mcpgateway.config import settings
 # Import metrics with error handling for test environments
 try:
     # First-Party
-    from mcpgateway.services.metrics import (
-        content_pattern_violations_counter,
-        content_size_violations_counter,
-        content_type_violations_counter,
-    )
+    from mcpgateway.services.metrics import content_size_violations_counter, content_type_violations_counter
 except ImportError:
     # Metrics not available in test environment - create no-op counters
     class NoOpCounter:
-        """No-op counter for test environments where metrics are unavailable."""
-
-        def labels(self, **_kwargs):
-            """Return self to allow method chaining.
-
-            Args:
-                **_kwargs: Arbitrary keyword arguments (ignored)
-
-            Returns:
-                self: Returns self for method chaining
-            """
+        def labels(self, **kwargs):
             return self
 
-        def inc(self, _amount=1):
-            """No-op increment method."""
+        def inc(self, amount=1):
+            pass
 
     content_size_violations_counter = NoOpCounter()
     content_type_violations_counter = NoOpCounter()
-    content_pattern_violations_counter = NoOpCounter()
 
 logger = logging.getLogger(__name__)
 
@@ -174,69 +159,13 @@ class ContentTypeError(Exception):
         super().__init__(f"MIME type '{mime_type}' is not allowed. Allowed types: {display}")
 
 
-class ContentPatternError(Exception):
-    """Raised when content contains malicious patterns.
-
-    This exception is raised when the content security service detects
-    patterns that match known malicious content signatures such as XSS,
-    template injection, or command injection attempts.
-
-    Attributes:
-        pattern_matched: The regex pattern that matched the malicious content
-        content_snippet: A snippet of the content around the match location
-        violation_type: Type of security violation (xss, template_injection, command_injection, etc.)
-        content_type: Type of content being validated (resource, prompt)
-
-    Examples:
-        >>> try:
-        ...     raise ContentPatternError(
-        ...         pattern_matched="<script[^>]*>",
-        ...         content_snippet="<script>alert(1)</script>",
-        ...         violation_type="xss",
-        ...         content_type="resource"
-        ...     )
-        ... except ContentPatternError as e:
-        ...     print(e.violation_type)
-        xss
-        >>> err = ContentPatternError("<script>", "<script>alert(1)</script>", "xss", "resource")
-        >>> err.pattern_matched
-        '<script>'
-        >>> err.violation_type
-        'xss'
-        >>> "Malicious pattern detected" in str(err)
-        True
-    """
-
-    def __init__(self, pattern_matched: str, content_snippet: str, violation_type: str, content_type: str = "content"):
-        """Initialize ContentPatternError with pattern details.
-
-        Args:
-            pattern_matched: The regex pattern that matched
-            content_snippet: Snippet of content around the match
-            violation_type: Type of violation (xss, template_injection, command_injection, sql_injection, unknown)
-            content_type: Type of content (resource, prompt)
-        """
-        self.pattern_matched = pattern_matched
-        self.content_snippet = content_snippet
-        self.violation_type = violation_type
-        self.content_type = content_type
-
-        # Truncate snippet if too long for error message
-        max_snippet = 50
-        display_snippet = content_snippet[:max_snippet]
-        if len(content_snippet) > max_snippet:
-            display_snippet += "..."
-
-        super().__init__(f"Malicious pattern detected in {content_type}: " f"{violation_type} pattern matched. " f"Content snippet: '{display_snippet}'")
-
-
 class ContentSecurityService:
     """Service for validating content security constraints.
 
     This service provides validation for:
-    - Content size limits
+    - Content size limits (US-1)
     - MIME type restrictions (US-2)
-    - Malicious pattern detection (future)
+    - Malicious pattern detection (US-3, future)
     - Template syntax validation (US-4, future)
 
     Examples:
@@ -253,11 +182,6 @@ class ContentSecurityService:
         """Initialize the content security service."""
         self.max_resource_size = settings.content_max_resource_size
         self.max_prompt_size = settings.content_max_prompt_size
-
-        # Pattern detection - compile patterns once at startup for performance
-        self._pattern_cache: Dict[str, re.Pattern] = {}
-        self._compile_patterns()
-
         logger.info(
             "ContentSecurityService initialized",
             extra={
@@ -265,166 +189,8 @@ class ContentSecurityService:
                 "max_prompt_size": self.max_prompt_size,
                 "strict_mime_validation": settings.content_strict_mime_validation,
                 "allowed_resource_mimetypes_count": len(settings.content_allowed_resource_mimetypes),
-                "pattern_detection_enabled": settings.content_pattern_detection_enabled,
-                "pattern_validation_mode": settings.content_pattern_validation_mode,
-                "compiled_patterns_count": len(self._pattern_cache),
             },
         )
-
-    def _compile_patterns(self) -> None:
-        """Compile regex patterns once at startup for performance.
-
-        This method compiles all configured malicious patterns into regex objects
-        and caches them for reuse. Pattern compilation is expensive, so doing it
-        once at startup provides ~10x performance improvement over compiling on
-        each validation.
-
-        The patterns are compiled with IGNORECASE and MULTILINE flags to catch
-        variations in casing and patterns that span multiple lines.
-
-        Raises:
-            re.error: If any pattern has invalid regex syntax
-        """
-        if not settings.content_pattern_detection_enabled:
-            logger.info("Pattern detection disabled - skipping pattern compilation")
-            return
-
-        patterns = settings.content_blocked_patterns
-        logger.info(f"Compiling {len(patterns)} malicious patterns for detection")
-
-        for pattern_str in patterns:
-            try:
-                # Compile with IGNORECASE and MULTILINE for comprehensive detection
-                compiled = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
-                self._pattern_cache[pattern_str] = compiled
-                logger.debug(f"Compiled pattern: {pattern_str[:50]}...")
-            except re.error as e:
-                logger.error(
-                    f"Failed to compile pattern: {pattern_str[:50]}...",
-                    extra={"error": str(e), "pattern": pattern_str},
-                )
-                # Continue with other patterns even if one fails
-                continue
-
-        logger.info(f"Pattern compilation complete: {len(self._pattern_cache)}/{len(patterns)} patterns compiled successfully")
-
-    def _classify_violation(self, pattern: str) -> str:
-        """Classify a matched pattern into a violation type.
-
-        This method analyzes the matched pattern to determine what type of
-        security violation it represents. This classification is used for:
-        - Detailed logging and metrics
-        - Security incident categorization
-        - Targeted remediation guidance
-
-        Args:
-            pattern: The regex pattern that matched the content
-
-        Returns:
-            str: Violation type - one of:
-                - "xss": Cross-site scripting patterns
-                - "template_injection": Template injection patterns
-                - "command_injection": Command injection patterns
-                - "sql_injection": SQL injection patterns
-                - "unknown": Pattern doesn't match known categories
-
-        Examples:
-            >>> service = ContentSecurityService()
-            >>> service._classify_violation("<script>")
-            'xss'
-            >>> service._classify_violation("{{.*}}")
-            'template_injection'
-            >>> service._classify_violation("$(.*)")
-            'command_injection'
-        """
-        pattern_lower = pattern.lower()
-
-        # XSS patterns - HTML/JavaScript injection
-        xss_indicators = [
-            "<script",
-            "javascript:",
-            "onerror",
-            "onload",
-            "onclick",
-            "<iframe",
-            "<object",
-            "<embed",
-            "eval(",
-            "alert(",
-        ]
-        if any(indicator in pattern_lower for indicator in xss_indicators):
-            return "xss"
-
-        # Template injection patterns - Jinja2, Mustache, etc.
-        # Check for both literal and escaped versions (patterns use escaped regex)
-        template_indicators = [
-            "{{",
-            "\\{\\{",  # Jinja2/Django - literal and escaped
-            "}}",
-            "\\}\\}",
-            "{%",
-            "\\{%",  # Django template tags
-            "%}",
-            "%\\}",
-            "<%",
-            "<%",  # ERB templates
-            "%>",
-            "%>",
-            "${",
-            "\\$\\{",  # Expression evaluation
-            "[[",
-            "\\[\\[",  # Other template engines
-            "]]",
-            "\\]\\]",
-        ]
-        if any(indicator in pattern_lower for indicator in template_indicators):
-            return "template_injection"
-
-        # Command injection patterns - Shell commands
-        # Check for both literal and escaped versions
-        command_indicators = [
-            "$(",
-            "\\$\\(",  # Command substitution
-            "`",
-            "\\`",  # Backtick execution
-            ";",
-            ";",  # Command separator
-            "&&",
-            "&&",  # AND operator
-            "||",
-            "\\|\\|",  # OR operator (escaped pipes)
-            "|",
-            "\\|",  # Pipe operator
-            "exec",
-            "system",
-            "popen",
-            "subprocess",
-            "os.",
-            "shell",
-        ]
-        if any(indicator in pattern_lower for indicator in command_indicators):
-            return "command_injection"
-
-        # SQL injection patterns
-        sql_indicators = [
-            "union",
-            "select",
-            "insert",
-            "update",
-            "delete",
-            "drop",
-            "exec",
-            "--",
-            "/*",
-            "*/",
-            "xp_",
-            "sp_",
-        ]
-        if any(indicator in pattern_lower for indicator in sql_indicators):
-            return "sql_injection"
-
-        # Unknown pattern type
-        return "unknown"
 
     def validate_resource_size(self, content: Union[str, bytes], uri: Optional[str] = None, user_email: Optional[str] = None, ip_address: Optional[str] = None) -> None:
         """Validate resource content size.
@@ -451,6 +217,9 @@ class ContentSecurityService:
         actual_size = len(content_bytes)
 
         if actual_size > self.max_resource_size:
+            # Increment Prometheus metric
+            content_size_violations_counter.labels(content_type="resource").inc()
+
             # Log security violation with sanitized PII
             sanitized = _sanitize_pii_for_logging(user_email, ip_address)
             logger.warning(
@@ -485,6 +254,9 @@ class ContentSecurityService:
         actual_size = len(template_bytes)
 
         if actual_size > self.max_prompt_size:
+            # Increment Prometheus metric
+            content_size_violations_counter.labels(content_type="prompt").inc()
+
             # Log security violation with sanitized PII
             sanitized = _sanitize_pii_for_logging(user_email, ip_address)
             logger.warning("Prompt size limit exceeded", extra={"actual_size": actual_size, "max_size": self.max_prompt_size, "content_type": "prompt", "name_provided": name is not None, **sanitized})
@@ -501,11 +273,10 @@ class ContentSecurityService:
     ) -> None:
         """Validate a resource MIME type against the configured allowlist.
 
-        When :attr:`~mcpgateway.config.Settings.content_strict_mime_validation`
-        is ``True``, only MIME types explicitly listed in the allowlist are accepted.
-        This includes vendor types (``application/x-*``, ``text/x-*``) and
-        structured-syntax suffix types (e.g. ``application/vnd.api+json``) which
-        must be explicitly added to the allowlist if needed.
+        Vendor types (``application/x-*``, ``text/x-*``) and structured-syntax
+        suffix types (e.g. ``application/vnd.api+json``) are always permitted
+        regardless of the allowlist, matching the behaviour of
+        :meth:`~mcpgateway.common.validators.SecurityValidator.validate_mime_type`.
 
         When :attr:`~mcpgateway.config.Settings.content_strict_mime_validation`
         is ``False`` the method logs a warning but does **not** raise, enabling
@@ -524,7 +295,7 @@ class ContentSecurityService:
 
         Examples:
             >>> service = ContentSecurityService()
-            >>> service.validate_resource_mime_type("text/plain")  # OK if in allowlist
+            >>> service.validate_resource_mime_type("text/plain")  # OK
             >>> service.validate_resource_mime_type(None)          # OK - no type declared
             >>> from unittest.mock import patch
             >>> with patch("mcpgateway.services.content_security.settings") as mock_settings:
@@ -535,15 +306,6 @@ class ContentSecurityService:
             ...     except ContentTypeError as e:
             ...         print("blocked:", e.mime_type)
             blocked: application/evil
-            >>> # Vendor types must be explicitly in allowlist
-            >>> with patch("mcpgateway.services.content_security.settings") as mock_settings:
-            ...     mock_settings.content_strict_mime_validation = True
-            ...     mock_settings.content_allowed_resource_mimetypes = ["text/plain"]
-            ...     try:
-            ...         service.validate_resource_mime_type("application/x-custom")
-            ...     except ContentTypeError as e:
-            ...         print("vendor type blocked:", e.mime_type)
-            vendor type blocked: application/x-custom
         """
         # Allow absent MIME types - callers may omit the field legitimately
         if not mime_type:
@@ -556,18 +318,16 @@ class ContentSecurityService:
 
         allowed_types: List[str] = settings.content_allowed_resource_mimetypes
 
-        # Strip parameters from MIME type for comparison (e.g., "text/plain; charset=utf-8" -> "text/plain")
-        base_mime_type = mime_type.split(";")[0].strip()
-
-        # Fast path: exact match in allowlist (check both full and base MIME type)
-        if mime_type in allowed_types or base_mime_type in allowed_types:
+        # Fast path: exact match in allowlist
+        if mime_type in allowed_types:
             logger.debug("Resource MIME type validation passed: %s", mime_type)
             return
 
-        # In strict mode, ALL types must be explicitly in the allowlist.
-        # Vendor types (application/x-*, text/x-*) and suffix types (+json, +xml)
-        # are NOT automatically allowed for security reasons.
-        # If you need these types, add them explicitly to CONTENT_ALLOWED_RESOURCE_MIMETYPES.
+        # Always permit vendor types and structured-syntax suffix types to
+        # avoid breaking legitimate content that is not in the default list.
+        if mime_type.startswith(("application/x-", "text/x-")) or "+" in mime_type:
+            logger.debug("Resource MIME type permitted (vendor/suffix): %s", mime_type)
+            return
 
         # Validation failed - increment metric, log with sanitized PII, and raise
         content_type_violations_counter.labels(content_type="resource", mime_type=mime_type).inc()
@@ -583,205 +343,6 @@ class ContentSecurityService:
             },
         )
         raise ContentTypeError(mime_type, allowed_types)
-
-    def validate_content_patterns(
-        self,
-        content: str,
-        content_type: str,
-        name: Optional[str] = None,
-        user_email: Optional[str] = None,
-        ip_address: Optional[str] = None,
-    ) -> None:
-        """Validate content against malicious pattern detection rules.
-
-        This method scans user-submitted content for malicious patterns including:
-        - Cross-site scripting (XSS) attacks
-        - Template injection attempts
-        - Command injection attempts
-        - SQL injection attempts
-
-        The validation behavior depends on the configured mode:
-        - **strict**: Block all matches, raise ContentPatternError
-        - **moderate**: Context-aware validation (future: allow safe contexts)
-        - **lenient**: Log violations but don't block
-
-        Performance: Uses pre-compiled regex patterns (10x faster than runtime compilation)
-        and fail-fast algorithm (stops at first match in strict mode).
-
-        Args:
-            content: The content to validate (resource content or prompt template)
-            content_type: Type of content being validated ("resource" or "prompt")
-            name: Optional name/identifier for the content (for logging)
-            user_email: Optional user email for PII-safe audit logging
-            ip_address: Optional client IP for PII-safe audit logging
-
-        Raises:
-            ContentPatternError: If malicious pattern detected and validation mode
-                is "strict" or "moderate"
-
-        Examples:
-            Safe content passes validation:
-
-            >>> service = ContentSecurityService()
-            >>> service.validate_content_patterns("Hello world", "resource")
-
-            XSS patterns are detected in resources:
-
-            >>> service = ContentSecurityService()
-            >>> try:  # doctest: +ELLIPSIS
-            ...     service.validate_content_patterns("<script>alert('xss')</script>", "resource")
-            ... except ContentPatternError as e:
-            ...     print(f"Blocked: {e.violation_type}")
-            Blocked: xss
-
-            Template syntax is allowed in prompts (context-aware):
-
-            >>> service = ContentSecurityService()
-            >>> service.validate_content_patterns("Hello {{name}}", "prompt")
-        """
-        # Skip validation if pattern detection is disabled
-        if not settings.content_pattern_detection_enabled:
-            logger.debug("Pattern detection disabled - skipping validation")
-            return
-
-        # Skip validation if no patterns are configured
-        if not self._pattern_cache:
-            logger.debug("No patterns configured - skipping validation")
-            return
-
-        validation_mode = settings.content_pattern_validation_mode
-        logger.debug(
-            f"Validating {content_type} content for malicious patterns",
-            extra={
-                "content_length": len(content),
-                "validation_mode": validation_mode,
-                "pattern_count": len(self._pattern_cache),
-                "name_provided": name is not None,
-            },
-        )
-
-        # Scan content against all compiled patterns (fail-fast in strict mode)
-        for pattern_str, compiled_pattern in self._pattern_cache.items():
-            match = compiled_pattern.search(content)
-
-            if match:
-                # Pattern matched - classify the violation type
-                violation_type = self._classify_violation(pattern_str)
-
-                # Context-aware validation: Allow template patterns in prompts
-                # Prompts legitimately use {{ }}, {% %}, and ${ } for template variables
-                if content_type == "prompt" and violation_type == "template_injection":
-                    logger.debug(
-                        f"Allowing template syntax in {content_type} (legitimate use)",
-                        extra={
-                            "pattern": pattern_str[:50] + "..." if len(pattern_str) > 50 else pattern_str,
-                            "content_type": content_type,
-                            "violation_type": violation_type,
-                        },
-                    )
-                    continue  # Skip this match - it's legitimate template syntax
-
-                # Extract a safe snippet around the match for logging (max 100 chars)
-                match_start = max(0, match.start() - 20)
-                match_end = min(len(content), match.end() + 20)
-                content_snippet = content[match_start:match_end]
-
-                # Sanitize PII for logging
-                sanitized = _sanitize_pii_for_logging(user_email, ip_address)
-
-                # Log the violation with full context
-                logger.warning(
-                    f"Malicious pattern detected in {content_type}",
-                    extra={
-                        "violation_type": violation_type,
-                        "content_type": content_type,
-                        "validation_mode": validation_mode,
-                        "pattern_matched": pattern_str[:50] + "..." if len(pattern_str) > 50 else pattern_str,
-                        "match_position": match.start(),
-                        "content_snippet": content_snippet[:100] + "..." if len(content_snippet) > 100 else content_snippet,
-                        "content_length": len(content),
-                        "name_provided": name is not None,
-                        **sanitized,
-                    },
-                )
-
-                # Increment metrics counter for pattern violation
-                content_pattern_violations_counter.labels(content_type=content_type, violation_type=violation_type, validation_mode=validation_mode).inc()
-
-                # Handle based on validation mode
-                if validation_mode == "strict":
-                    # Strict mode: block immediately (fail-fast)
-                    logger.error(
-                        f"Blocking {content_type} due to malicious pattern (strict mode)",
-                        extra={
-                            "violation_type": violation_type,
-                            "content_type": content_type,
-                            **sanitized,
-                        },
-                    )
-                    raise ContentPatternError(
-                        pattern_matched=pattern_str,
-                        content_snippet=content_snippet,
-                        violation_type=violation_type,
-                        content_type=content_type,
-                    )
-
-                if validation_mode == "moderate":
-                    # Moderate mode: context-aware validation
-                    # For now, block all matches (future: allow safe contexts)
-                    logger.error(
-                        f"Blocking {content_type} due to malicious pattern (moderate mode)",
-                        extra={
-                            "violation_type": violation_type,
-                            "content_type": content_type,
-                            **sanitized,
-                        },
-                    )
-                    raise ContentPatternError(
-                        pattern_matched=pattern_str,
-                        content_snippet=content_snippet,
-                        violation_type=violation_type,
-                        content_type=content_type,
-                    )
-
-                if validation_mode == "lenient":
-                    # Lenient mode: log only, don't block
-                    logger.warning(
-                        "Malicious pattern detected but not blocking (lenient mode)",
-                        extra={
-                            "violation_type": violation_type,
-                            "content_type": content_type,
-                            **sanitized,
-                        },
-                    )
-                    # Continue scanning to log all violations
-                    continue
-
-                # Unknown mode - default to strict for security
-                if validation_mode not in ("strict", "moderate", "lenient"):
-                    logger.error(
-                        f"Unknown validation mode '{validation_mode}' - defaulting to strict",
-                        extra={
-                            "violation_type": violation_type,
-                            "content_type": content_type,
-                            **sanitized,
-                        },
-                    )
-                    raise ContentPatternError(
-                        pattern_matched=pattern_str,
-                        content_snippet=content_snippet,
-                        violation_type=violation_type,
-                        content_type=content_type,
-                    )
-
-        # No patterns matched - content is safe
-        logger.debug(
-            f"{content_type.capitalize()} content passed pattern validation",
-            extra={
-                "content_length": len(content),
-                "patterns_checked": len(self._pattern_cache),
-            },
-        )
 
 
 # Singleton instance with thread-safe initialization

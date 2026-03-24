@@ -98,7 +98,7 @@ password_reset_completions_counter = Counter(
     ["outcome"],
 )
 
-# Content Security Metrics
+# Content Security Metrics (US-2)
 content_size_violations_counter = Counter(
     "content_size_violations_total",
     "Total number of content size limit violations",
@@ -109,20 +109,6 @@ content_type_violations_counter = Counter(
     "content_type_violations_total",
     "Total number of MIME type violations",
     ["content_type", "mime_type"],  # content_type: "resource" or "prompt", mime_type: the rejected type
-)
-
-# Malicious Pattern Detection Metrics
-content_pattern_violations_counter = Counter(
-    "content_pattern_violations_total",
-    "Total number of malicious pattern violations detected",
-    ["content_type", "violation_type", "validation_mode"],  # content_type: "resource" or "prompt", violation_type: xss/sqli/etc, validation_mode: strict/moderate/lenient
-)
-
-# MCP Auth Cache Metrics
-mcp_auth_cache_events_counter = Counter(
-    "mcp_auth_cache_events_total",
-    "Total number of MCP auth cache events by outcome",
-    ["outcome"],
 )
 
 
