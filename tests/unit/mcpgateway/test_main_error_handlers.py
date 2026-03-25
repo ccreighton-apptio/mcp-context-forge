@@ -598,6 +598,11 @@ class TestServerServiceErrorHandlers:
 
 def test_content_type_exception_handler():
     """Test ContentTypeError exception handler returns 415 with proper format."""
+    # First-Party
+    from mcpgateway.main import content_type_exception_handler
+    from mcpgateway.services.content_security import ContentTypeError
+    from starlette.requests import Request
+
     # Create a mock request
     mock_request = MagicMock(spec=Request)
 
@@ -605,11 +610,13 @@ def test_content_type_exception_handler():
     exc = ContentTypeError(mime_type="application/evil", allowed_types=["text/plain", "application/json", "text/html"])
 
     # Call the exception handler
+    import asyncio
     response = asyncio.run(content_type_exception_handler(mock_request, exc))
 
     # Verify response
     assert response.status_code == 415
     content = response.body.decode()
+    import json
     result = json.loads(content)
     assert "detail" in result
     assert result["detail"]["error"] == "Unsupported MIME type"
