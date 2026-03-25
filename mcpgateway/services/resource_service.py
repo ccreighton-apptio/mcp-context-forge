@@ -477,7 +477,6 @@ class ResourceService(BaseService):
             ResourceError: For other resource registration errors
             ContentSizeError: For content size exceed
             ContentTypeError: If the MIME type is not allowed
-            ContentPatternError: If malicious patterns are detected in content
 
         Examples:
             >>> from mcpgateway.services.resource_service import ResourceService
