@@ -350,7 +350,7 @@ class TestValidateResourceMimeType:
         """Test that vendor types (x- prefix) are allowed in log-only mode."""
         from mcpgateway import config
         monkeypatch.setattr(config.settings, "content_strict_mime_validation", False)
-        
+
         service = ContentSecurityService()
         # Vendor types should pass in log-only mode
         service.validate_resource_mime_type("application/x-custom")
@@ -361,13 +361,13 @@ class TestValidateResourceMimeType:
         from mcpgateway import config
         monkeypatch.setattr(config.settings, "content_strict_mime_validation", True)
         monkeypatch.setattr(config.settings, "content_allowed_resource_mimetypes", ["text/plain"])
-        
+
         service = ContentSecurityService()
         # Vendor types should be rejected in strict mode if not in allowlist
         with pytest.raises(ContentTypeError) as exc_info:
             service.validate_resource_mime_type("application/x-custom")
         assert exc_info.value.mime_type == "application/x-custom"
-        
+
         with pytest.raises(ContentTypeError) as exc_info:
             service.validate_resource_mime_type("text/x-special")
         assert exc_info.value.mime_type == "text/x-special"
@@ -376,7 +376,7 @@ class TestValidateResourceMimeType:
         """Test that suffix types (with +) are allowed in log-only mode."""
         from mcpgateway import config
         monkeypatch.setattr(config.settings, "content_strict_mime_validation", False)
-        
+
         service = ContentSecurityService()
         # Suffix types should pass in log-only mode
         service.validate_resource_mime_type("application/vnd.api+json")
@@ -387,13 +387,13 @@ class TestValidateResourceMimeType:
         from mcpgateway import config
         monkeypatch.setattr(config.settings, "content_strict_mime_validation", True)
         monkeypatch.setattr(config.settings, "content_allowed_resource_mimetypes", ["text/plain"])
-        
+
         service = ContentSecurityService()
         # Suffix types should be rejected in strict mode if not in allowlist
         with pytest.raises(ContentTypeError) as exc_info:
             service.validate_resource_mime_type("application/vnd.api+json")
         assert exc_info.value.mime_type == "application/vnd.api+json"
-        
+
         with pytest.raises(ContentTypeError) as exc_info:
             service.validate_resource_mime_type("application/custom+xml")
         assert exc_info.value.mime_type == "application/custom+xml"
