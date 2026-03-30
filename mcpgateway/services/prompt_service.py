@@ -50,7 +50,7 @@ from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, Prom
 from mcpgateway.schemas import PromptCreate, PromptMetrics, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.base_service import BaseService
-from mcpgateway.services.content_security import ContentSizeError, get_content_security_service
+from mcpgateway.services.content_security import ContentPatternError, ContentSizeError, get_content_security_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -725,6 +725,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other prompt registration errors
             ContentSizeError: For template size exceed
+            ContentPatternError: If malicious patterns detected in template
 
         Examples:
             >>> import logging
@@ -756,6 +757,15 @@ class PromptService(BaseService):
             content_security = get_content_security_service()
             content_security.validate_prompt_size(
                 template=prompt.template,
+                name=prompt.name,
+                user_email=created_by or owner_email,
+                ip_address=created_from_ip,
+            )
+
+            # Validate template for malicious patterns
+            content_security.validate_content_patterns(
+                content=prompt.template,
+                content_type="prompt",
                 name=prompt.name,
                 user_email=created_by or owner_email,
                 ip_address=created_from_ip,
@@ -946,6 +956,24 @@ class PromptService(BaseService):
                 custom_fields={"prompt_name": prompt.name, "visibility": visibility},
             )
             raise cse
+        except ContentPatternError as cpe:
+            db.rollback()
+
+            structured_logger.log(
+                level="ERROR",
+                message=f"Malicious pattern detected in prompt: {cpe.violation_type}",
+                event_type="prompt_pattern_violation",
+                component="prompt_service",
+                user_id=created_by,
+                user_email=owner_email,
+                custom_fields={
+                    "prompt_name": prompt.name,
+                    "violation_type": cpe.violation_type,
+                    "pattern_matched": cpe.pattern_matched,
+                    "visibility": visibility,
+                },
+            )
+            raise cpe
         except Exception as e:
             db.rollback()
 
@@ -1094,6 +1122,15 @@ class PromptService(BaseService):
                         # Validate template size BEFORE any processing
                         content_security = get_content_security_service()
                         content_security.validate_prompt_size(template=prompt.template, name=prompt.name, user_email=created_by, ip_address=created_from_ip)
+
+                        # Validate template for malicious patterns
+                        content_security.validate_content_patterns(
+                            content=prompt.template,
+                            content_type="prompt",
+                            name=prompt.name,
+                            user_email=created_by,
+                            ip_address=created_from_ip,
+                        )
 
                         # Validate template syntax
                         self._validate_template(prompt.template)
@@ -2164,6 +2201,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other update errors
             ContentSizeError: For template size exceed
+            ContentPatternError: If malicious patterns are detected in template
 
         Examples:
             >>> import logging
@@ -2271,6 +2309,16 @@ class PromptService(BaseService):
                     user_email=modified_by or user_email,
                     ip_address=modified_from_ip,
                 )
+
+                # Validate template for malicious patterns
+                content_security.validate_content_patterns(
+                    content=prompt_update.template,
+                    content_type="prompt",
+                    name=prompt.name,
+                    user_email=modified_by or user_email,
+                    ip_address=modified_from_ip,
+                )
+
                 prompt.template = prompt_update.template
                 self._validate_template(prompt.template)
                 # Clear template cache to reduce memory growth
@@ -2441,6 +2489,23 @@ class PromptService(BaseService):
                 error=cse,
             )
             raise cse
+        except ContentPatternError as cpe:
+            db.rollback()
+            logger.error(f"Malicious pattern detected in prompt update: {cpe.violation_type}")
+            structured_logger.log(
+                level="ERROR",
+                message=f"Malicious pattern detected in prompt update: {cpe.violation_type}",
+                event_type="prompt_pattern_violation",
+                component="prompt_service",
+                user_email=user_email,
+                resource_type="prompt",
+                resource_id=str(prompt_id),
+                custom_fields={
+                    "violation_type": cpe.violation_type,
+                    "pattern_matched": cpe.pattern_matched,
+                },
+            )
+            raise cpe
         except Exception as e:
             db.rollback()
 
