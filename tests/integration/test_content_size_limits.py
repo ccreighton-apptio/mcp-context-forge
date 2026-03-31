@@ -137,11 +137,6 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test.token.size_limits"}
 
 
-
-import pytest
-from fastapi import status
-
-
 class TestResourceSizeLimits:
     """Test resource content size limits."""
 

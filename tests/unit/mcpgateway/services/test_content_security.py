@@ -4,6 +4,8 @@
 import re
 
 import pytest
+import mcpgateway.services.content_security as cs_mod
+from unittest.mock import patch, MagicMock
 
 # First-Party
 from mcpgateway import config
@@ -250,8 +252,6 @@ class TestGetContentSecurityService:
         the singleton, so the inner ``if _content_security_service is None`` is
         False and execution falls through to the ``return`` on line 375.
         """
-        import mcpgateway.services.content_security as cs_mod
-        from unittest.mock import patch, MagicMock
 
         # Pre-build a sentinel service instance
         sentinel = ContentSecurityService()
@@ -596,6 +596,3 @@ class TestNoOpCounterFallback:
                 sys.modules["mcpgateway.services.content_security"] = original_cs
             elif "mcpgateway.services.content_security" in sys.modules:
                 del sys.modules["mcpgateway.services.content_security"]
-
-
-# Made with Bob
