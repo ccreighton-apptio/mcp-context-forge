@@ -576,60 +576,64 @@ class TestPromptServiceErrorHandlers:
             assert response.status_code == 403
 
     def test_create_prompt_template_validation_error(self, test_client, auth_headers):
-        """Test TemplateValidationError handling in create_prompt endpoint."""
-        # Create a prompt with invalid template (unbalanced braces)
-        # Note: FastAPI expects the prompt data wrapped in a "prompt" key when mixing
-        # Pydantic model parameters with Body parameters
-        request_data = {
-            "prompt": {
-                "name": "test-invalid-prompt",
-                "template": "Hello {{ invalid",  # Unbalanced braces
-                "description": "Test prompt with invalid template",
-            },
-            "team_id": None,
-            "visibility": "public"
-        }
-        response = test_client.post("/prompts/", json=request_data, headers=auth_headers)
-        # Accept either 400 (template validation) or 422 (Pydantic validation)
-        assert response.status_code in [400, 422]
-        assert "detail" in response.json()
-        # Verify error message mentions template or validation issue
-        response_text = str(response.json())
-        assert "template" in response_text.lower() or "validation" in response_text.lower() or "unbalanced" in response_text.lower()
+        """Test TemplateValidationError handling in create_prompt endpoint by mocking service."""
+        # First-Party
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        # Mock the prompt service to raise TemplateValidationError
+        with patch("mcpgateway.main.prompt_service.register_prompt", new_callable=AsyncMock) as mock_register:
+            mock_register.side_effect = TemplateValidationError(
+                template_name="test-invalid-prompt",
+                reason="Template contains dangerous pattern that could lead to code injection",
+                pattern=r"__import__"
+            )
+
+            request_data = {
+                "prompt": {
+                    "name": "test-invalid-prompt",
+                    "template": "Hello {{ name }}",
+                    "description": "Test prompt",
+                },
+                "team_id": None,
+                "visibility": "public"
+            }
+            response = test_client.post("/prompts/", json=request_data, headers=auth_headers)
+
+            # Should get 400 from TemplateValidationError handler
+            assert response.status_code == 400
+            assert "detail" in response.json()
+            detail = response.json()["detail"]
+            assert "Template validation failed" in detail["error"]
+            assert detail["template_name"] == "test-invalid-prompt"
+            assert detail["reason"] == "Template contains dangerous pattern that could lead to code injection"
+            assert detail["pattern"] == r"__import__"
 
     def test_update_prompt_template_validation_error(self, test_client, auth_headers):
-        """Test TemplateValidationError handling in update_prompt endpoint."""
-        # First create a valid prompt
-        # Note: FastAPI expects the prompt data wrapped in a "prompt" key for create endpoint
-        create_data = {
-            "prompt": {
-                "name": "test-prompt-to-update",
+        """Test TemplateValidationError handling in update_prompt endpoint by mocking service."""
+        # First-Party
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        # Mock the prompt service to raise TemplateValidationError
+        with patch("mcpgateway.main.prompt_service.update_prompt", new_callable=AsyncMock) as mock_update:
+            mock_update.side_effect = TemplateValidationError(
+                template_name="test-prompt",
+                reason="Unbalanced template braces - check {{ }}, {% %}, or {# #} pairs"
+            )
+
+            update_data = {
+                "name": "test-prompt",
                 "template": "Hello {{ name }}",
-                "description": "Valid prompt",
-            },
-            "team_id": None,
-            "visibility": "public"
-        }
-        create_response = test_client.post("/prompts/", json=create_data, headers=auth_headers)
-        if create_response.status_code not in [200, 201]:
-            pytest.skip(f"Could not create test prompt: {create_response.status_code}")
+                "description": "Test prompt",
+            }
+            response = test_client.put("/prompts/test-id", json=update_data, headers=auth_headers)
 
-        prompt_id = create_response.json()["id"]
-
-        # Now try to update with invalid template
-        # Note: Update endpoint expects prompt data directly (not wrapped)
-        update_data = {
-            "name": "test-prompt-to-update",
-            "template": "{{ __import__('os') }}",  # Dangerous pattern
-            "description": "Prompt with dangerous template",
-        }
-        response = test_client.put(f"/prompts/{prompt_id}", json=update_data, headers=auth_headers)
-        # Accept either 400 (template validation) or 422 (Pydantic validation)
-        assert response.status_code in [400, 422]
-        assert "detail" in response.json()
-        # Verify error message mentions template or validation issue
-        response_text = str(response.json())
-        assert "template" in response_text.lower() or "validation" in response_text.lower() or "dangerous" in response_text.lower() or "__import__" in response_text.lower()
+            # Should get 400 from TemplateValidationError handler
+            assert response.status_code == 400
+            assert "detail" in response.json()
+            detail = response.json()["detail"]
+            assert "Template validation failed" in detail["error"]
+            assert detail["template_name"] == "test-prompt"
+            assert "Unbalanced template braces" in detail["reason"]
 
 
 # --------------------------------------------------------------------------- #
@@ -726,3 +730,68 @@ def test_template_validation_exception_handler():
     content2 = response2.body.decode()
     result2 = json.loads(content2)
     assert "pattern" not in result2["detail"] or result2["detail"]["pattern"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Admin Template Validation Error Handler Tests                               #
+# --------------------------------------------------------------------------- #
+
+
+class TestAdminTemplateValidationErrorHandlers:
+    """Test TemplateValidationError handling in admin endpoints."""
+
+    def test_admin_add_prompt_template_validation_error(self, test_client, auth_headers):
+        """Test TemplateValidationError handling in admin_add_prompt endpoint."""
+        # First-Party
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        # Mock the prompt service to raise TemplateValidationError
+        with patch("mcpgateway.admin.prompt_service.register_prompt", new_callable=AsyncMock) as mock_register:
+            mock_register.side_effect = TemplateValidationError(
+                template_name="admin-test-prompt",
+                reason="Template contains dangerous pattern that could lead to code injection",
+                pattern=r"__import__"
+            )
+
+            form_data = {
+                "name": "admin-test-prompt",
+                "template": "Hello {{ name }}",
+                "description": "Test prompt",
+            }
+            response = test_client.post("/admin/prompts", data=form_data, headers=auth_headers)
+
+            # Should get 400 from TemplateValidationError handler
+            assert response.status_code == 400
+            assert "message" in response.json()
+            content = response.json()
+            assert "Template validation failed" in content["message"]
+            assert content["template_name"] == "admin-test-prompt"
+            assert content["reason"] == "Template contains dangerous pattern that could lead to code injection"
+            assert content["pattern"] == r"__import__"
+
+    def test_admin_edit_prompt_template_validation_error(self, test_client, auth_headers):
+        """Test TemplateValidationError handling in admin_edit_prompt endpoint."""
+        # First-Party
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        # Mock the prompt service to raise TemplateValidationError
+        with patch("mcpgateway.admin.prompt_service.update_prompt", new_callable=AsyncMock) as mock_update:
+            mock_update.side_effect = TemplateValidationError(
+                template_name="admin-edit-prompt",
+                reason="Unbalanced template braces - check {{ }}, {% %}, or {# #} pairs"
+            )
+
+            form_data = {
+                "name": "admin-edit-prompt",
+                "template": "Hello {{ name }}",  # Valid format, but service will raise error
+                "description": "Test prompt",
+            }
+            response = test_client.post("/admin/prompts/test-id/edit", data=form_data, headers=auth_headers)
+
+            # Should get 400 from TemplateValidationError handler
+            assert response.status_code == 400
+            assert "message" in response.json()
+            content = response.json()
+            assert "Template validation failed" in content["message"]
+            assert content["template_name"] == "admin-edit-prompt"
+            assert "Unbalanced template braces" in content["reason"]

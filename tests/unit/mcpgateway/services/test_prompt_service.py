@@ -1233,6 +1233,48 @@ class TestPromptService:
             test_db.rollback.assert_called_once()
 
 
+    @pytest.mark.asyncio
+    async def test_update_prompt_template_validation_error(self, prompt_service, test_db):
+        """Test that TemplateValidationError is caught and re-raised during prompt update."""
+        # First-Party
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        existing = _build_db_prompt()
+        existing.team_id = "team-123"
+        test_db.get = Mock(return_value=existing)
+        test_db.execute = Mock(
+            side_effect=[
+                _make_execute_result(scalar=existing),
+                _make_execute_result(scalar=None),
+            ]
+        )
+        test_db.rollback = Mock()
+
+        # Mock get_content_security_service to return a mock that raises TemplateValidationError
+        mock_security_service = Mock()
+        mock_security_service.validate_prompt_template.side_effect = TemplateValidationError(
+            template_name="test-template",
+            reason="Template contains dangerous pattern",
+            pattern="__import__"
+        )
+
+        with patch("mcpgateway.services.prompt_service.get_content_security_service", return_value=mock_security_service):
+            # Use a safe template that passes Pydantic validation
+            # The mock will raise TemplateValidationError when validate_prompt_template is called
+            upd = PromptUpdate(template="Hello {{ name }}")
+
+            with pytest.raises(TemplateValidationError) as exc_info:
+                await prompt_service.update_prompt(test_db, 1, upd)
+
+            # Verify the error details
+            assert exc_info.value.template_name == "test-template"
+            assert "dangerous pattern" in exc_info.value.reason.lower()
+            assert exc_info.value.pattern == "__import__"
+
+            # Verify rollback was called
+            test_db.rollback.assert_called_once()
+
+
     # ──────────────────────────────────────────────────────────────────
     #   set state
     # ──────────────────────────────────────────────────────────────────
