@@ -2024,10 +2024,10 @@ class TestPromptBulkRegistration:
 
         # Ensure validation is enabled by monkeypatching settings
         monkeypatch.setattr(config.settings, "content_validate_prompt_templates", True)
-        
+
         # Create a fresh ContentSecurityService with validation enabled
         mock_security_service = ContentSecurityService()
-        
+
         db = MagicMock()
         db.execute.return_value.scalars.return_value.all.return_value = []
         db.commit = MagicMock()
