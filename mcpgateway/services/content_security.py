@@ -432,10 +432,22 @@ class ContentSecurityService:
             TemplateValidationError: If template validation fails
 
         Examples:
+            Valid template:
+
             >>> service = ContentSecurityService()
             >>> service.validate_prompt_template("Hello {{name}}")  # OK
-            >>> service.validate_prompt_template("{{user")  # Raises: unbalanced
-            >>> service.validate_prompt_template("{{__import__('os')}}")  # Raises: dangerous
+
+            Invalid templates raise TemplateValidationError:
+
+            >>> service.validate_prompt_template("{{user")  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            mcpgateway.services.content_security.TemplateValidationError: Template validation failed for 'unnamed': Unbalanced template braces...
+
+            >>> service.validate_prompt_template("{{__import__('os')}}")  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            mcpgateway.services.content_security.TemplateValidationError: Template validation failed for 'unnamed': Template contains dangerous pattern...
         """
         if not settings.content_validate_prompt_templates:
             logger.debug("Template validation disabled via CONTENT_VALIDATE_PROMPT_TEMPLATES")
@@ -463,7 +475,9 @@ class ContentSecurityService:
             # Third-Party
             from jinja2 import Environment, meta
 
-            env = Environment()
+            # nosec B701: Environment used only for parsing/validation, not rendering
+            # Templates are never rendered with this Environment, so autoescape is not needed
+            env = Environment()  # nosec B701
             ast = env.parse(template)
             # This call validates that all filters and tests exist
             # It raises TemplateAssertionError for nonexistent filters
