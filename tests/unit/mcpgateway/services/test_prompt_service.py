@@ -2017,10 +2017,17 @@ class TestPromptBulkRegistration:
         assert any("Prompt name conflict" in err for err in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_register_prompts_bulk_invalid_template_counts_failed(self, prompt_service):
+    async def test_register_prompts_bulk_invalid_template_counts_failed(self, prompt_service, monkeypatch):
         """Test that template validation errors cause fail-fast in bulk operations."""
-        from mcpgateway.services.content_security import TemplateValidationError
+        from mcpgateway.services.content_security import TemplateValidationError, ContentSecurityService
+        from mcpgateway import config
 
+        # Ensure validation is enabled by monkeypatching settings
+        monkeypatch.setattr(config.settings, "content_validate_prompt_templates", True)
+        
+        # Create a fresh ContentSecurityService with validation enabled
+        mock_security_service = ContentSecurityService()
+        
         db = MagicMock()
         db.execute.return_value.scalars.return_value.all.return_value = []
         db.commit = MagicMock()
@@ -2042,18 +2049,20 @@ class TestPromptBulkRegistration:
             visibility="public",
         )
 
-        # Template validation errors now cause fail-fast behavior
-        with pytest.raises(TemplateValidationError) as exc_info:
-            await prompt_service.register_prompts_bulk(
-                db=db,
-                prompts=[prompt],
-                created_by="tester",
-                conflict_strategy="skip",
-            )
+        # Mock get_content_security_service to return our service with validation enabled
+        with patch("mcpgateway.services.prompt_service.get_content_security_service", return_value=mock_security_service):
+            # Template validation errors now cause fail-fast behavior
+            with pytest.raises(TemplateValidationError) as exc_info:
+                await prompt_service.register_prompts_bulk(
+                    db=db,
+                    prompts=[prompt],
+                    created_by="tester",
+                    conflict_strategy="skip",
+                )
 
-        assert "Unbalanced template braces" in str(exc_info.value)
-        # Verify rollback was called
-        db.rollback.assert_called()
+            assert "Unbalanced template braces" in str(exc_info.value)
+            # Verify rollback was called
+            db.rollback.assert_called()
 
 
 # ---------------------------------------------------------------------------

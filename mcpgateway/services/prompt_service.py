@@ -957,22 +957,7 @@ class PromptService(BaseService):
             raise cse
         except TemplateValidationError as tve:
             db.rollback()
-
-            structured_logger.log(
-                level="ERROR",
-                message=f"Prompt template validation failed: {tve.reason}",
-                event_type="prompt_template_validation_failed",
-                component="prompt_service",
-                user_id=created_by,
-                user_email=owner_email,
-                custom_fields={
-                    "prompt_name": prompt.name,
-                    "template_name": tve.template_name,
-                    "reason": tve.reason,
-                    "pattern": tve.pattern,
-                    "visibility": visibility,
-                },
-            )
+            # Re-raise without wrapping so global/admin handlers can catch it
             raise tve
         except Exception as e:
             db.rollback()
@@ -1313,11 +1298,9 @@ class PromptService(BaseService):
 
                 logger.info(f"Bulk registered {len(prompts_to_add)} prompts, updated {len(prompts_to_update)} prompts in chunk")
 
-            except TemplateValidationError as tve:
-                # Template validation errors should fail fast and propagate
-                db.rollback()
-                logger.error(f"Template validation failed in bulk operation: {tve.reason}")
-                raise tve
+            except TemplateValidationError:
+                # Template validation errors should fail fast - re-raise immediately
+                raise
             except Exception as e:
                 db.rollback()
                 logger.error(f"Failed to process chunk in bulk prompt registration: {str(e)}")
@@ -2503,21 +2486,7 @@ class PromptService(BaseService):
             raise cse
         except TemplateValidationError as tve:
             db.rollback()
-
-            structured_logger.log(
-                level="ERROR",
-                message=f"Prompt update failed - Template validation failed: {tve.reason}",
-                event_type="prompt_update_failed",
-                component="prompt_service",
-                user_email=user_email,
-                resource_type="prompt",
-                resource_id=str(prompt_id),
-                custom_fields={
-                    "template_name": tve.template_name,
-                    "reason": tve.reason,
-                    "pattern": tve.pattern,
-                },
-            )
+            # Re-raise without wrapping so global/admin handlers can catch it
             raise tve
         except Exception as e:
             db.rollback()

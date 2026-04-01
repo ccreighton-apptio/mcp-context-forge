@@ -6265,6 +6265,12 @@ async def create_prompt(
         if isinstance(e, ContentSizeError):
             logger.error(f"Content size exceeded in creating prompt: {e}")
             raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
+        if isinstance(e, TemplateValidationError):
+            logger.error(f"Template validation failed while creating prompt: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "Template validation failed", "message": str(e), "template_name": e.template_name, "reason": e.reason, "pattern": e.pattern if e.pattern else None},
+            )
         # For any other unexpected errors, return a 500 Internal Server Error
         logger.error(f"Unexpected error while creating prompt: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred while creating the prompt")
@@ -6462,6 +6468,12 @@ async def update_prompt(
         if isinstance(e, ContentSizeError):
             logger.error(f"Content size exceeded in updating prompt: {e}")
             raise HTTPException(status_code=413, detail={"error": f"{e.content_type} size limit exceeded", "message": str(e), "actual_size": e.actual_size, "max_size": e.max_size})
+        if isinstance(e, TemplateValidationError):
+            logger.error(f"Template validation failed while updating prompt: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "Template validation failed", "message": str(e), "template_name": e.template_name, "reason": e.reason, "pattern": e.pattern if e.pattern else None},
+            )
         # For any other unexpected errors, return a 500 Internal Server Error
         logger.error(f"Unexpected error while updating prompt: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred while updating the prompt")
