@@ -375,15 +375,19 @@ class TestPromptService:
 
     @pytest.mark.asyncio
     async def test_register_prompt_template_validation_error(self, prompt_service, test_db):
+        """Test that template validation errors are raised as TemplateValidationError."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
         test_db.execute = Mock(return_value=_make_execute_result(scalar=None))
         test_db.add, test_db.commit, test_db.refresh = Mock(), Mock(), Mock()
         prompt_service._notify_prompt_added = AsyncMock()
-        # Patch _validate_template to raise
-        prompt_service._validate_template = Mock(side_effect=Exception("bad template"))
-        pc = PromptCreate(name="fail", description="", template="bad", arguments=[])
-        with pytest.raises(PromptError) as exc_info:
+
+        # Use a template with nonexistent filter (passes Pydantic, fails service validation)
+        pc = PromptCreate(name="fail", description="", template="Hello {{ name | nonexistent_filter }}", arguments=[])
+
+        with pytest.raises(TemplateValidationError) as exc_info:
             await prompt_service.register_prompt(test_db, pc)
-        assert "Failed to register prompt" in str(exc_info.value)
+        assert "no filter named" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2014,15 +2018,19 @@ class TestPromptBulkRegistration:
 
     @pytest.mark.asyncio
     async def test_register_prompts_bulk_invalid_template_counts_failed(self, prompt_service):
+        """Test that template validation errors cause fail-fast in bulk operations."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
         db = MagicMock()
         db.execute.return_value.scalars.return_value.all.return_value = []
         db.commit = MagicMock()
         db.refresh = MagicMock()
+        db.rollback = MagicMock()
         prompt_service._notify_prompt_added = AsyncMock()
 
         prompt = SimpleNamespace(
             name="bad",
-            template="Hello {{ invalid",
+            template="Hello {{ invalid",  # Unbalanced braces
             description=None,
             arguments=[],
             tags=[],
@@ -2034,15 +2042,18 @@ class TestPromptBulkRegistration:
             visibility="public",
         )
 
-        result = await prompt_service.register_prompts_bulk(
-            db=db,
-            prompts=[prompt],
-            created_by="tester",
-            conflict_strategy="skip",
-        )
+        # Template validation errors now cause fail-fast behavior
+        with pytest.raises(TemplateValidationError) as exc_info:
+            await prompt_service.register_prompts_bulk(
+                db=db,
+                prompts=[prompt],
+                created_by="tester",
+                conflict_strategy="skip",
+            )
 
-        assert result["failed"] == 1
-        assert any("Failed to process prompt" in err for err in result["errors"])
+        assert "Unbalanced template braces" in str(exc_info.value)
+        # Verify rollback was called
+        db.rollback.assert_called()
 
 
 # ---------------------------------------------------------------------------

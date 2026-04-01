@@ -50,7 +50,7 @@ from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, Prom
 from mcpgateway.schemas import PromptCreate, PromptMetrics, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.base_service import BaseService
-from mcpgateway.services.content_security import ContentSizeError, get_content_security_service
+from mcpgateway.services.content_security import ContentSizeError, get_content_security_service, TemplateValidationError
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -725,7 +725,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other prompt registration errors
             ContentSizeError: For template size exceed
-            ContentPatternError: If malicious patterns detected in template
+            TemplateValidationError: For template security violations (US-4)
 
         Examples:
             >>> import logging
@@ -762,17 +762,16 @@ class PromptService(BaseService):
                 ip_address=created_from_ip,
             )
 
-            # Validate template for malicious patterns
-            content_security.validate_content_patterns(
-                content=prompt.template,
-                content_type="prompt",
+            # Validate template security (US-4)
+            content_security.validate_prompt_template(
+                template=prompt.template,
                 name=prompt.name,
                 user_email=created_by or owner_email,
                 ip_address=created_from_ip,
             )
 
-            # Validate template syntax
-            self._validate_template(prompt.template)
+            # Note: Template syntax validation is now handled by validate_prompt_template above
+            # No need for duplicate _validate_template call
 
             # Extract required arguments from template
             required_args = self._get_required_arguments(prompt.template)
@@ -956,24 +955,25 @@ class PromptService(BaseService):
                 custom_fields={"prompt_name": prompt.name, "visibility": visibility},
             )
             raise cse
-        except ContentPatternError as cpe:
+        except TemplateValidationError as tve:
             db.rollback()
 
             structured_logger.log(
                 level="ERROR",
-                message=f"Malicious pattern detected in prompt: {cpe.violation_type}",
-                event_type="prompt_pattern_violation",
+                message=f"Prompt template validation failed: {tve.reason}",
+                event_type="prompt_template_validation_failed",
                 component="prompt_service",
                 user_id=created_by,
                 user_email=owner_email,
                 custom_fields={
                     "prompt_name": prompt.name,
-                    "violation_type": cpe.violation_type,
-                    "pattern_matched": cpe.pattern_matched,
+                    "template_name": tve.template_name,
+                    "reason": tve.reason,
+                    "pattern": tve.pattern,
                     "visibility": visibility,
                 },
             )
-            raise cpe
+            raise tve
         except Exception as e:
             db.rollback()
 
@@ -1037,6 +1037,8 @@ class PromptService(BaseService):
 
         Raises:
             PromptError: If bulk registration fails critically
+            ContentSizeError: If any template exceeds size limits
+            TemplateValidationError: If any template contains dangerous patterns or invalid syntax
 
         Examples:
             >>> import logging
@@ -1123,17 +1125,16 @@ class PromptService(BaseService):
                         content_security = get_content_security_service()
                         content_security.validate_prompt_size(template=prompt.template, name=prompt.name, user_email=created_by, ip_address=created_from_ip)
 
-                        # Validate template for malicious patterns
-                        content_security.validate_content_patterns(
-                            content=prompt.template,
-                            content_type="prompt",
+                        # Validate template security (US-4)
+                        content_security.validate_prompt_template(
+                            template=prompt.template,
                             name=prompt.name,
                             user_email=created_by,
                             ip_address=created_from_ip,
                         )
 
-                        # Validate template syntax
-                        self._validate_template(prompt.template)
+                        # Note: Template syntax validation is now handled by validate_prompt_template above
+                        # No need for duplicate _validate_template call
 
                         # Extract required arguments from template
                         required_args = self._get_required_arguments(prompt.template)
@@ -1260,6 +1261,11 @@ class PromptService(BaseService):
                             prompts_to_add.append(db_prompt)
                             stats["created"] += 1
 
+                    except TemplateValidationError as tve:
+                        # Template validation errors should fail fast, not continue
+                        db.rollback()
+                        logger.error(f"Template validation failed for prompt {prompt.name}: {tve.reason}")
+                        raise tve
                     except Exception as e:
                         stats["failed"] += 1
                         stats["errors"].append(f"Failed to process prompt {prompt.name}: {str(e)}")
@@ -1307,6 +1313,11 @@ class PromptService(BaseService):
 
                 logger.info(f"Bulk registered {len(prompts_to_add)} prompts, updated {len(prompts_to_update)} prompts in chunk")
 
+            except TemplateValidationError as tve:
+                # Template validation errors should fail fast and propagate
+                db.rollback()
+                logger.error(f"Template validation failed in bulk operation: {tve.reason}")
+                raise tve
             except Exception as e:
                 db.rollback()
                 logger.error(f"Failed to process chunk in bulk prompt registration: {str(e)}")
@@ -2201,7 +2212,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other update errors
             ContentSizeError: For template size exceed
-            ContentPatternError: If malicious patterns are detected in template
+            TemplateValidationError: If template contains dangerous patterns or invalid syntax
 
         Examples:
             >>> import logging
@@ -2310,17 +2321,18 @@ class PromptService(BaseService):
                     ip_address=modified_from_ip,
                 )
 
-                # Validate template for malicious patterns
-                content_security.validate_content_patterns(
-                    content=prompt_update.template,
-                    content_type="prompt",
+                # Validate template security (US-4)
+                content_security.validate_prompt_template(
+                    template=prompt_update.template,
                     name=prompt.name,
                     user_email=modified_by or user_email,
                     ip_address=modified_from_ip,
                 )
 
+                # Note: Template syntax validation is now handled by validate_prompt_template above
+                # No need for duplicate _validate_template call
+
                 prompt.template = prompt_update.template
-                self._validate_template(prompt.template)
                 # Clear template cache to reduce memory growth
                 _compile_jinja_template.cache_clear()
             if prompt_update.arguments is not None:
@@ -2489,23 +2501,24 @@ class PromptService(BaseService):
                 error=cse,
             )
             raise cse
-        except ContentPatternError as cpe:
+        except TemplateValidationError as tve:
             db.rollback()
-            logger.error(f"Malicious pattern detected in prompt update: {cpe.violation_type}")
+
             structured_logger.log(
                 level="ERROR",
-                message=f"Malicious pattern detected in prompt update: {cpe.violation_type}",
-                event_type="prompt_pattern_violation",
+                message=f"Prompt update failed - Template validation failed: {tve.reason}",
+                event_type="prompt_update_failed",
                 component="prompt_service",
                 user_email=user_email,
                 resource_type="prompt",
                 resource_id=str(prompt_id),
                 custom_fields={
-                    "violation_type": cpe.violation_type,
-                    "pattern_matched": cpe.pattern_matched,
+                    "template_name": tve.template_name,
+                    "reason": tve.reason,
+                    "pattern": tve.pattern,
                 },
             )
-            raise cpe
+            raise tve
         except Exception as e:
             db.rollback()
 

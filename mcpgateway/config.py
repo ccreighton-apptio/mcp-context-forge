@@ -1636,6 +1636,31 @@ class Settings(BaseSettings):
         description="Enable strict MIME type validation for resources (US-2). Set to false to log violations without blocking.",
     )
 
+    # Content Security - Template Validation (US-4)
+    content_validate_prompt_templates: bool = Field(
+        default=True,
+        description="Enable prompt template validation for syntax and security patterns (US-4). Validates Jinja2 syntax and blocks dangerous patterns.",
+    )
+    content_blocked_template_patterns: List[str] = Field(
+        default_factory=lambda: [
+            r"__import__",  # Python import injection
+            r"__builtins__",  # Access to builtins
+            r"__globals__",  # Access to globals
+            r"__locals__",  # Access to locals
+            r"__class__",  # Class introspection
+            r"__base__",  # Base class access
+            r"__subclasses__",  # Subclass enumeration
+            r"eval\s*\(",  # Eval function
+            r"exec\s*\(",  # Exec function
+            r"compile\s*\(",  # Compile function
+            r"open\s*\(",  # File operations
+            r"file\s*\(",  # File operations
+            r"input\s*\(",  # Input operations
+            r"__\w+__",  # Any dunder method
+        ],
+        description="Regex patterns for dangerous template constructs (US-4). Blocks Python injection attempts in Jinja2 templates.",
+    )
+
     # MCP Session Pool - reduces per-request latency from ~20ms to ~1-2ms
     # Disabled by default for safety. Enable explicitly in production after testing.
     mcp_session_pool_enabled: bool = False

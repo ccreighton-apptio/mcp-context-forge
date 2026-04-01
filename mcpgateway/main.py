@@ -145,7 +145,7 @@ from mcpgateway.schemas import (
 from mcpgateway.services.a2a_service import A2AAgentError, A2AAgentNameConflictError, A2AAgentNotFoundError, A2AAgentService
 from mcpgateway.services.cancellation_service import cancellation_service
 from mcpgateway.services.completion_service import CompletionService
-from mcpgateway.services.content_security import ContentSizeError, ContentTypeError
+from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, TemplateValidationError
 from mcpgateway.services.email_auth_service import EmailAuthService
 from mcpgateway.services.export_service import ExportError, ExportService
 from mcpgateway.services.gateway_service import GatewayConnectionError, GatewayDuplicateConflictError, GatewayError, GatewayNameConflictError, GatewayNotFoundError
@@ -2334,6 +2334,28 @@ async def content_size_exception_handler(_request: Request, exc: ContentSizeErro
         ORJSONResponse: A 413 Payload Too Large response with structured error details.
     """
     return ORJSONResponse(status_code=413, content={"detail": {"error": f"{exc.content_type} size limit exceeded", "message": str(exc), "actual_size": exc.actual_size, "max_size": exc.max_size}})
+
+
+@app.exception_handler(TemplateValidationError)
+async def template_validation_exception_handler(_request: Request, exc: TemplateValidationError):
+    """Handle template validation errors globally.
+
+    Args:
+        _request: The incoming request (unused, required by FastAPI handler interface).
+        exc: The TemplateValidationError with template_name, reason, and pattern.
+
+    Returns:
+        ORJSONResponse: A 400 Bad Request response with structured error details.
+    """
+    error_detail = {
+        "error": "Template validation failed",
+        "message": str(exc),
+        "template_name": exc.template_name,
+        "reason": exc.reason,
+    }
+    if exc.pattern:
+        error_detail["pattern"] = exc.pattern
+    return ORJSONResponse(status_code=400, content={"detail": error_detail})
 
 
 # RFC 9110 §5.6.2 'token' pattern for header field names:

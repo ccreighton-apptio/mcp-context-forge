@@ -596,3 +596,428 @@ class TestNoOpCounterFallback:
                 sys.modules["mcpgateway.services.content_security"] = original_cs
             elif "mcpgateway.services.content_security" in sys.modules:
                 del sys.modules["mcpgateway.services.content_security"]
+
+
+
+class TestTemplateValidationError:
+    """Test the TemplateValidationError exception."""
+
+    def test_template_validation_error_attributes(self):
+        """Test TemplateValidationError has correct attributes."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        error = TemplateValidationError(
+            template_name="test_template",
+            reason="Dangerous pattern detected",
+            pattern="__import__"
+        )
+        assert error.template_name == "test_template"
+        assert error.reason == "Dangerous pattern detected"
+        assert error.pattern == "__import__"
+
+    def test_template_validation_error_without_pattern(self):
+        """Test TemplateValidationError without pattern attribute."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        error = TemplateValidationError(
+            template_name="test_template",
+            reason="Unbalanced braces"
+        )
+        assert error.template_name == "test_template"
+        assert error.reason == "Unbalanced braces"
+        assert error.pattern is None
+
+    def test_template_validation_error_message(self):
+        """Test TemplateValidationError message formatting."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        error = TemplateValidationError(
+            template_name="my_prompt",
+            reason="Invalid syntax",
+            pattern="eval("
+        )
+        message = str(error)
+        assert "my_prompt" in message
+        assert "Invalid syntax" in message
+        assert "eval(" in message
+
+
+class TestCheckBalancedBraces:
+    """Test the _check_balanced_braces static method."""
+
+    def test_balanced_simple_jinja(self):
+        """Test balanced simple Jinja2 template."""
+        service = ContentSecurityService()
+        template = "Hello {{ name }}!"
+        assert service._check_balanced_braces(template) is True
+
+    def test_balanced_multiple_variables(self):
+        """Test balanced template with multiple variables."""
+        service = ContentSecurityService()
+        template = "{{ greeting }} {{ name }}, you have {{ count }} messages."
+        assert service._check_balanced_braces(template) is True
+
+    def test_balanced_with_blocks(self):
+        """Test balanced template with control blocks."""
+        service = ContentSecurityService()
+        template = "{% for item in items %}{{ item }}{% endfor %}"
+        assert service._check_balanced_braces(template) is True
+
+    def test_balanced_with_comments(self):
+        """Test balanced template with comments."""
+        service = ContentSecurityService()
+        template = "{# This is a comment #}{{ value }}"
+        assert service._check_balanced_braces(template) is True
+
+    def test_balanced_nested_blocks(self):
+        """Test balanced template with nested blocks."""
+        service = ContentSecurityService()
+        template = "{% if user %}{% for item in user.items %}{{ item }}{% endfor %}{% endif %}"
+        assert service._check_balanced_braces(template) is True
+
+    def test_unbalanced_missing_closing_variable(self):
+        """Test unbalanced template missing closing variable brace."""
+        service = ContentSecurityService()
+        template = "Hello {{ name !"
+        assert service._check_balanced_braces(template) is False
+
+    def test_unbalanced_missing_opening_variable(self):
+        """Test unbalanced template missing opening variable brace."""
+        service = ContentSecurityService()
+        template = "Hello name }}!"
+        assert service._check_balanced_braces(template) is False
+
+    def test_unbalanced_missing_closing_block(self):
+        """Test unbalanced template missing closing block brace."""
+        service = ContentSecurityService()
+        template = "{% for item in items %{{ item }}"
+        assert service._check_balanced_braces(template) is False
+
+    def test_unbalanced_missing_opening_block(self):
+        """Test unbalanced template missing opening block brace."""
+        service = ContentSecurityService()
+        template = "for item in items %}{{ item }}"
+        assert service._check_balanced_braces(template) is False
+
+    def test_unbalanced_missing_closing_comment(self):
+        """Test unbalanced template missing closing comment brace."""
+        service = ContentSecurityService()
+        template = "{# This is a comment {{ value }}"
+        assert service._check_balanced_braces(template) is False
+
+    def test_unbalanced_mixed_delimiters(self):
+        """Test unbalanced template with mixed delimiter types."""
+        service = ContentSecurityService()
+        template = "{{ name %}"  # Variable start, block end
+        assert service._check_balanced_braces(template) is False
+
+    def test_empty_template(self):
+        """Test empty template is considered balanced."""
+        service = ContentSecurityService()
+        template = ""
+        assert service._check_balanced_braces(template) is True
+
+    def test_no_jinja_syntax(self):
+        """Test template with no Jinja2 syntax is balanced."""
+        service = ContentSecurityService()
+        template = "This is just plain text with no templating."
+        assert service._check_balanced_braces(template) is True
+
+
+class TestValidatePromptTemplate:
+    """Test the validate_prompt_template method."""
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_safe_template(self, mock_settings):
+        """Test validating a safe template passes."""
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [
+            r'__import__',
+            r'eval\s*\(',
+            r'exec\s*\(',
+            r'__.*__'
+        ]
+
+        service = ContentSecurityService()
+        template = "Hello {{ name }}, welcome to {{ site }}!"
+
+        # Should not raise
+        service.validate_prompt_template(template, "test_prompt")
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_disabled_validation(self, mock_settings):
+        """Test validation is skipped when disabled."""
+        mock_settings.content_validate_prompt_templates = False
+
+        service = ContentSecurityService()
+        template = "{{ __import__('os').system('rm -rf /') }}"
+
+        # Should not raise even with dangerous content
+        service.validate_prompt_template(template, "test_prompt")
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_unbalanced_braces(self, mock_settings):
+        """Test validation fails for unbalanced braces."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = []
+
+        service = ContentSecurityService()
+        template = "Hello {{ name !"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Unbalanced template braces" in error.reason
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_dangerous_import_pattern(self, mock_settings):
+        """Test validation fails for __import__ pattern."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'__import__']
+
+        service = ContentSecurityService()
+        template = "{{ __import__('os').getcwd() }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+        assert error.pattern == "__import__"
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_dangerous_eval_pattern(self, mock_settings):
+        """Test validation fails for eval pattern."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'eval\s*\(']
+
+        service = ContentSecurityService()
+        template = "{{ eval('1+1') }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+        assert "eval\\s*\\(" in error.pattern
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_dangerous_exec_pattern(self, mock_settings):
+        """Test validation fails for exec pattern."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'exec\s*\(']
+
+        service = ContentSecurityService()
+        template = "{% set result = exec('print(1)') %}{{ result }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_dangerous_dunder_pattern(self, mock_settings):
+        """Test validation fails for dunder method pattern."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'__.*__']
+
+        service = ContentSecurityService()
+        template = "{{ user.__class__.__bases__ }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_invalid_jinja_syntax(self, mock_settings):
+        """Test validation fails for invalid Jinja2 syntax."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = []
+
+        service = ContentSecurityService()
+        template = "{{ name | invalid_filter_that_does_not_exist }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert error.template_name == "test_prompt"
+        assert "Invalid Jinja2 syntax" in error.reason
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_with_logging_context(self, mock_settings):
+        """Test validation with logging context (user, IP)."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'__import__']
+
+        service = ContentSecurityService()
+        template = "{{ __import__('sys').version }}"
+
+        with pytest.raises(TemplateValidationError):
+            service.validate_prompt_template(
+                template,
+                name="dangerous_prompt",
+                user_email="hacker@evil.com",
+                ip_address="192.168.1.100"
+            )
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_case_insensitive_patterns(self, mock_settings):
+        """Test validation is case-insensitive for patterns."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [r'__import__']
+
+        service = ContentSecurityService()
+        template = "{{ __IMPORT__('os') }}"  # Uppercase
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_multiple_patterns_first_match(self, mock_settings):
+        """Test validation stops at first matching pattern."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [
+            r'__import__',
+            r'eval\s*\('
+        ]
+
+        service = ContentSecurityService()
+        template = "{{ __import__('os') and eval('1+1') }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(template, "test_prompt")
+
+        error = exc_info.value
+        # Should match the first pattern
+        assert error.pattern == "__import__"
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_validate_complex_safe_template(self, mock_settings):
+        """Test validation passes for complex but safe template."""
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [
+            r'__import__',
+            r'eval\s*\(',
+            r'exec\s*\(',
+            r'__.*__'
+        ]
+
+        service = ContentSecurityService()
+        template = """
+        {% if user %}
+            Hello {{ user.name }}!
+            {% for item in user.items %}
+                - {{ item.title }}: {{ item.description | truncate(50) }}
+            {% endfor %}
+            {# This is a safe comment #}
+            Total: {{ user.items | length }} items
+        {% else %}
+            Welcome, guest!
+        {% endif %}
+        """
+
+        # Should not raise
+        service.validate_prompt_template(template, "complex_prompt")
+
+    def test_validate_none_template_name(self):
+        """Test validation with None template name."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        with patch('mcpgateway.services.content_security.settings') as mock_settings:
+            mock_settings.content_validate_prompt_templates = True
+            mock_settings.content_blocked_template_patterns = []
+
+            service = ContentSecurityService()
+            template = "{{ name !"  # Unbalanced
+
+            with pytest.raises(TemplateValidationError) as exc_info:
+                service.validate_prompt_template(template, name=None)
+
+            error = exc_info.value
+            assert error.template_name == "unnamed"
+
+
+class TestTemplateValidationIntegration:
+    """Integration tests for template validation in the full service."""
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_full_validation_pipeline_safe(self, mock_settings):
+        """Test the complete validation pipeline with safe template."""
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [
+            r'__import__',
+            r'eval\s*\(',
+            r'exec\s*\(',
+            r'__.*__'
+        ]
+
+        service = ContentSecurityService()
+        template = "Welcome {{ user.name }}, you have {{ notifications | length }} new messages."
+
+        # Should complete without raising
+        service.validate_prompt_template(
+            template=template,
+            name="notification_prompt",
+            user_email="user@example.com",
+            ip_address="10.0.0.1"
+        )
+
+    @patch('mcpgateway.services.content_security.settings')
+    def test_full_validation_pipeline_dangerous(self, mock_settings):
+        """Test the complete validation pipeline with dangerous template."""
+        from mcpgateway.services.content_security import TemplateValidationError
+
+        mock_settings.content_validate_prompt_templates = True
+        mock_settings.content_blocked_template_patterns = [
+            r'__import__',
+            r'eval\s*\(',
+            r'exec\s*\(',
+            r'__.*__'
+        ]
+
+        service = ContentSecurityService()
+        template = "{{ user.__class__.__mro__[1].__subclasses__() }}"
+
+        with pytest.raises(TemplateValidationError) as exc_info:
+            service.validate_prompt_template(
+                template=template,
+                name="malicious_prompt",
+                user_email="attacker@evil.com",
+                ip_address="192.168.1.200"
+            )
+
+        error = exc_info.value
+        assert error.template_name == "malicious_prompt"
+        assert "Template contains dangerous pattern that could lead to code injection" in error.reason
+        assert "__.*__" in error.pattern

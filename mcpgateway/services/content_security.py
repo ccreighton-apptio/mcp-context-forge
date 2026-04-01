@@ -14,6 +14,7 @@ from issue #538.
 # Standard
 import hashlib
 import logging
+import re
 import threading
 from typing import List, Optional, Union
 
@@ -167,6 +168,47 @@ class ContentTypeError(Exception):
             display += f", ... ({len(allowed_types)} total)"
 
         super().__init__(f"MIME type '{mime_type}' is not allowed. Allowed types: {display}")
+
+
+class TemplateValidationError(Exception):
+    """Raised when prompt template validation fails.
+
+    This exception is raised when a prompt template contains:
+    - Unbalanced Jinja2 delimiters ({{, }}, {%, %}, {#, #})
+    - Dangerous Python patterns (eval, exec, __import__, dunder methods)
+    - Invalid Jinja2 syntax
+
+    Attributes:
+        template_name: Name of the template that failed validation
+        reason: Human-readable reason for validation failure
+        pattern: Optional regex pattern that was matched (for dangerous patterns)
+
+    Examples:
+        >>> err = TemplateValidationError("my-prompt", "Unbalanced braces")
+        >>> str(err)
+        "Template validation failed for 'my-prompt': Unbalanced braces"
+
+        >>> err = TemplateValidationError("evil", "Dangerous pattern", "__import__")
+        >>> err.pattern
+        '__import__'
+    """
+
+    def __init__(self, template_name: str, reason: str, pattern: Optional[str] = None):
+        """Initialize TemplateValidationError.
+
+        Args:
+            template_name: Name of the template (for logging/debugging)
+            reason: Description of why validation failed
+            pattern: Optional pattern that triggered the failure
+        """
+        self.template_name = template_name
+        self.reason = reason
+        self.pattern = pattern
+
+        message = f"Template validation failed for '{template_name}': {reason}"
+        if pattern:
+            message += f" (matched pattern: {pattern})"
+        super().__init__(message)
 
 
 class ContentSecurityService:
@@ -365,6 +407,127 @@ class ContentSecurityService:
             },
         )
         raise ContentTypeError(mime_type, allowed_types)
+
+    def validate_prompt_template(
+        self,
+        template: str,
+        name: Optional[str] = None,
+        user_email: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        """Validate prompt template for safe syntax and patterns (US-4).
+
+        Performs three levels of validation:
+        1. Balanced Jinja2 braces ({{, }}, {%, %}, {#, #})
+        2. Dangerous Python pattern detection (eval, exec, __import__, etc.)
+        3. Valid Jinja2 syntax via parsing
+
+        Args:
+            template: The prompt template string to validate
+            name: Optional prompt name for logging context
+            user_email: Optional user email for audit logging (sanitized)
+            ip_address: Optional IP address for audit logging (sanitized)
+
+        Raises:
+            TemplateValidationError: If template validation fails
+
+        Examples:
+            >>> service = ContentSecurityService()
+            >>> service.validate_prompt_template("Hello {{name}}")  # OK
+            >>> service.validate_prompt_template("{{user")  # Raises: unbalanced
+            >>> service.validate_prompt_template("{{__import__('os')}}")  # Raises: dangerous
+        """
+        if not settings.content_validate_prompt_templates:
+            logger.debug("Template validation disabled via CONTENT_VALIDATE_PROMPT_TEMPLATES")
+            return
+
+        template_name = name or "unnamed"
+
+        # Step 1: Check for balanced braces
+        if not self._check_balanced_braces(template):
+            sanitized = _sanitize_pii_for_logging(user_email, ip_address)
+            logger.warning("Template syntax validation failed: unbalanced braces", extra={"template_name": template_name, **sanitized})
+            raise TemplateValidationError(template_name, "Unbalanced template braces - check {{ }}, {% %}, or {# #} pairs")
+
+        # Step 2: Scan for dangerous patterns
+        blocked_patterns = settings.content_blocked_template_patterns
+        for pattern in blocked_patterns:
+            if re.search(pattern, template, re.IGNORECASE):
+                sanitized = _sanitize_pii_for_logging(user_email, ip_address)
+                logger.warning("Template security validation failed: dangerous pattern detected", extra={"template_name": template_name, "pattern": pattern, **sanitized})
+                raise TemplateValidationError(template_name, "Template contains dangerous pattern that could lead to code injection", pattern=pattern)
+
+        # Step 3: Validate Jinja2 syntax by attempting to parse and analyze
+        # This catches both syntax errors AND undefined filters/tests
+        try:
+            # Third-Party
+            from jinja2 import Environment, meta
+
+            env = Environment()
+            ast = env.parse(template)
+            # This call validates that all filters and tests exist
+            # It raises TemplateAssertionError for nonexistent filters
+            meta.find_undeclared_variables(ast)
+        except Exception as e:
+            sanitized = _sanitize_pii_for_logging(user_email, ip_address)
+            logger.warning("Template Jinja2 syntax validation failed", extra={"template_name": template_name, "error": str(e), **sanitized})
+            raise TemplateValidationError(template_name, f"Invalid Jinja2 syntax: {str(e)}")
+
+        logger.debug(f"Template validation passed for: {template_name}")
+
+    @staticmethod
+    def _check_balanced_braces(template: str) -> bool:
+        """Check if Jinja2 template braces are balanced.
+
+        Validates three types of Jinja2 delimiters:
+        - {{ }} for variables
+        - {% %} for statements
+        - {# #} for comments
+
+        Uses stack-based validation for each delimiter type independently.
+
+        Args:
+            template: Template string to check
+
+        Returns:
+            True if all braces are balanced, False otherwise
+
+        Examples:
+            >>> ContentSecurityService._check_balanced_braces("{{var}}")
+            True
+            >>> ContentSecurityService._check_balanced_braces("{{var")
+            False
+            >>> ContentSecurityService._check_balanced_braces("{% if x %}{% endif %}")
+            True
+        """
+        # Stack-based validation for each delimiter type
+        pairs = [
+            ("{{", "}}"),  # Variables
+            ("{%", "%}"),  # Statements
+            ("{#", "#}"),  # Comments
+        ]
+
+        for open_delim, close_delim in pairs:
+            stack = []
+            i = 0
+            while i < len(template):
+                # Check for opening delimiter
+                if template[i : i + len(open_delim)] == open_delim:
+                    stack.append(open_delim)
+                    i += len(open_delim)
+                # Check for closing delimiter
+                elif template[i : i + len(close_delim)] == close_delim:
+                    if not stack:
+                        return False  # Closing without opening
+                    stack.pop()
+                    i += len(close_delim)
+                else:
+                    i += 1
+
+            if stack:
+                return False  # Unclosed delimiters
+
+        return True
 
 
 # Singleton instance with thread-safe initialization
