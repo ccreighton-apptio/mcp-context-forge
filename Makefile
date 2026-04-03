@@ -8398,7 +8398,7 @@ upgrade-validate:                         ## Validate fresh + upgrade DB startup
 # help: rust-mcp-runtime-test                 - Run tests for the experimental Rust MCP runtime
 # help: rust-mcp-runtime-run                  - Run the experimental Rust MCP runtime against local gateway /rpc
 
-.PHONY: rust-build rust-dev rust-test rust-test-integration rust-python-test rust-test-all rust-bench rust-bench-build rust-bench-compare rust-compare rust-check rust-clean rust-verify rust-verify-stubs
+.PHONY: rust-build rust-dev rust-test rust-test-integration rust-python-test rust-test-all rust-bench rust-bench-build rust-bench-compare rust-compare rust-check rust-clean rust-verify rust-verify-stubs rust-sidecar-install rust-sidecar-test
 .PHONY: rust-ensure-deps rust-install-deps rust-install-targets rust-install
 .PHONY: rust-build-all-linux rust-build-all-platforms rust-cross rust-cross-install-build
 .PHONY: rust-mcp-runtime-build rust-mcp-runtime-test rust-mcp-runtime-run
@@ -8431,12 +8431,13 @@ rust-ensure-deps:                       ## Ensure Rust toolchain, maturin, and a
 
 rust-install: rust-ensure-deps          ## Install all Rust plugins into venv
 	@$(MAKE) -C plugins_rust install
+	@$(MAKE) rust-sidecar-install
 
 rust-build: rust-ensure-deps            ## Build Rust plugins (release)
 	@$(MAKE) -C plugins_rust build
 
 rust-dev: rust-ensure-deps              ## Build and install Rust plugins (development mode)
-	@$(MAKE) -C plugins_rust install
+	@$(MAKE) rust-install
 
 rust-test: rust-ensure-deps             ## Run Rust plugin tests
 	@$(MAKE) -C plugins_rust test
@@ -8460,6 +8461,16 @@ rust-compare: rust-ensure-deps          ## Run compare_performance.py only (skip
 
 rust-check: rust-ensure-deps            ## Run all Rust checks (format, lint, test)
 	@$(MAKE) -C plugins_rust check
+	@$(MAKE) rust-sidecar-test
+
+rust-sidecar-install: rust-ensure-deps  ## Build and install the validation middleware sidecar into the active venv
+	@test -d "$(VENV_DIR)" || $(MAKE) venv
+	@echo "🧪 Installing validation middleware sidecar..."
+	@/bin/bash -c "source $(VENV_DIR)/bin/activate && maturin develop --manifest-path tools_rust/validation_middleware_sidecar/Cargo.toml"
+
+rust-sidecar-test: rust-ensure-deps     ## Run tests for the validation middleware sidecar crate
+	@echo "🧪 Testing validation middleware sidecar..."
+	@cargo test --manifest-path tools_rust/validation_middleware_sidecar/Cargo.toml
 
 rust-doc: rust-ensure-deps              ## Build Rust documentation
 	@$(MAKE) -C plugins_rust doc
