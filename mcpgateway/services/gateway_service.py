@@ -3585,7 +3585,12 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         else:
                             # For Client Credentials flow, get token directly
                             try:
-                                access_token = await self.oauth_manager.get_access_token(gateway_oauth_config)
+                                access_token = await self.oauth_manager.get_access_token(
+                                    gateway_oauth_config,
+                                    ca_certificate=gateway.ca_certificate,
+                                    client_cert=gateway.client_cert,
+                                    client_key=gateway.client_key
+                                )
                                 headers["Authorization"] = f"Bearer {access_token}"
                             except Exception as e:
                                 if span:
@@ -3954,7 +3959,12 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     # For Client Credentials flow, we can get the token immediately
                     try:
                         logger.debug("Obtaining OAuth access token for Client Credentials flow")
-                        access_token = await self.oauth_manager.get_access_token(oauth_config)
+                        access_token = await self.oauth_manager.get_access_token(
+                            oauth_config,
+                            ca_certificate=ca_certificate,
+                            client_cert=client_cert,
+                            client_key=client_key
+                        )
                         authentication = {"Authorization": f"Bearer {access_token}"}
                     except Exception as e:
                         logger.error(f"Failed to obtain OAuth access token: {e}")
