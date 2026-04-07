@@ -374,10 +374,6 @@ class Settings(BaseSettings):
 
     # Security Validation & Sanitization
     experimental_validate_io: bool = Field(default=False, description="Enable experimental input validation and output sanitization")
-    experimental_rust_validation_middleware_enabled: bool = Field(
-        default=False,
-        description="Enable experimental Rust sidecar for recursive validation middleware JSON checks",
-    )
     experimental_rust_validation_sidecar_enabled: bool = Field(
         default=False,
         description="Enable the experimental Rust validation sidecar over a Unix domain socket.",
