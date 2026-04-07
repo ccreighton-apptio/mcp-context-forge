@@ -352,7 +352,7 @@ class Settings(BaseSettings):
     experimental_validate_io: bool = Field(default=False, description="Enable experimental input validation and output sanitization")
     experimental_rust_validation_middleware_enabled: bool = Field(
         default=False,
-        description="Enable experimental Rust sidecar for recursive validation middleware JSON checks",
+        description="Enable the experimental in-process Rust validator for recursive validation middleware JSON checks",
     )
     validation_middleware_enabled: bool = Field(default=False, description="Enable validation middleware for all requests")
     validation_strict: bool = Field(default=True, description="Strict validation mode - reject on violations")
