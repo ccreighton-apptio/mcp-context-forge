@@ -188,7 +188,7 @@ class ContentPatternError(Exception):
     Examples:
         >>> err = ContentPatternError("<script>", "Resource content")
         >>> str(err)
-        "Malicious pattern detected in Resource content: <script>"
+        'Malicious pattern detected in Resource content: <script>'
         >>> err.pattern_matched
         '<script>'
         >>> err = ContentPatternError(";", "prompt", "ls; rm -rf /", "command_injection")

@@ -725,6 +725,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other prompt registration errors
             ContentSizeError: For template size exceed
+            ContentPatternError: If template contains malicious patterns (US-3)
             TemplateValidationError: For template security violations (US-4)
 
         Examples:
@@ -2209,6 +2210,7 @@ class PromptService(BaseService):
             PromptNameConflictError: If a prompt with the same name already exists.
             PromptError: For other update errors
             ContentSizeError: For template size exceed
+            ContentPatternError: If template contains malicious patterns (US-3)
             TemplateValidationError: If template contains dangerous patterns or invalid syntax
 
         Examples:
