@@ -56,7 +56,7 @@ def test_app():
     from mcpgateway.config import settings
 
     mp.setattr(settings, "database_url", url, raising=False)
-    
+
     # Enable pattern detection for tests
     mp.setattr(settings, "content_pattern_detection_enabled", True, raising=False)
     mp.setattr(settings, "content_pattern_validation_mode", "strict", raising=False)
@@ -159,7 +159,7 @@ class TestXSSPatternDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert "detail" in data
@@ -181,7 +181,7 @@ class TestXSSPatternDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "xss_event_handler"
@@ -198,7 +198,7 @@ class TestXSSPatternDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "xss_javascript_protocol"
@@ -215,7 +215,7 @@ class TestXSSPatternDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "xss_script_tag"
@@ -236,7 +236,7 @@ class TestTemplateInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "template_injection_jinja"
@@ -253,7 +253,7 @@ class TestTemplateInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "template_injection_expression"
@@ -270,7 +270,7 @@ class TestTemplateInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "template_injection_jinja"
@@ -291,7 +291,7 @@ class TestCommandInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "command_injection_shell"
@@ -308,7 +308,7 @@ class TestCommandInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "command_injection_chaining"
@@ -325,7 +325,7 @@ class TestCommandInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "command_injection_backtick"
@@ -346,7 +346,7 @@ class TestSQLInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "sql_injection_keywords"
@@ -363,7 +363,7 @@ class TestSQLInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "sql_injection_comment"
@@ -380,7 +380,7 @@ class TestSQLInjectionDetection:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert data["detail"]["violation_type"] == "sql_injection_string_concat"
@@ -450,7 +450,7 @@ class TestPatternValidationConsistency:
         assert "violation_type" in data["detail"]
     def test_prompt_update_blocks_xss_pattern(self, client, auth_headers):
         """Test that updating a prompt with XSS pattern returns 400 with structured error.
-        
+
         This test covers:
         - main.py lines 6236-6237 (ContentPatternError handler in PUT /prompts endpoint)
         - prompt_service.py lines 2380-2381 (ContentPatternError handler in update_prompt)
@@ -467,14 +467,14 @@ class TestPatternValidationConsistency:
         )
         assert create_response.status_code == 201
         prompt_id = create_response.json()["id"]
-        
+
         # Update with XSS pattern
         update_response = client.put(
             f"/api/prompts/{prompt_id}",
             json={"template": "<script>alert('XSS')</script>"},
             headers=auth_headers
         )
-        
+
         # Verify 400 error with structured response
         assert update_response.status_code == 400
         data = update_response.json()
@@ -490,7 +490,7 @@ class TestPatternValidationConsistency:
 
     def test_prompt_update_blocks_command_injection(self, client, auth_headers):
         """Test that updating a prompt with command injection returns 400.
-        
+
         Additional coverage for different violation types in UPDATE endpoint.
         """
         # Create clean prompt
@@ -505,14 +505,14 @@ class TestPatternValidationConsistency:
         )
         assert create_response.status_code == 201
         prompt_id = create_response.json()["id"]
-        
+
         # Update with command injection
         update_response = client.put(
             f"/api/prompts/{prompt_id}",
             json={"template": "Run: ls; rm -rf /"},
             headers=auth_headers
         )
-        
+
         # Verify 400 error
         assert update_response.status_code == 400
         data = update_response.json()
@@ -521,7 +521,7 @@ class TestPatternValidationConsistency:
 
     def test_prompt_create_blocks_sql_injection(self, client, auth_headers):
         """Test that creating a prompt with SQL injection returns 400.
-        
+
         This test covers:
         - main.py lines 6032-6040 (ContentPatternError handler in POST /prompts endpoint)
         - Verifies CREATE endpoint handler works correctly
@@ -535,7 +535,7 @@ class TestPatternValidationConsistency:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         data = response.json()
         assert isinstance(data["detail"], dict)
@@ -627,7 +627,7 @@ class TestValidationModes:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 400
         assert "violation_type" in response.json()["detail"]
 
@@ -646,7 +646,7 @@ class TestValidationModes:
             },
             headers=auth_headers
         )
-        
+
         # In lenient mode, content should be allowed
         assert response.status_code == 201
 
@@ -672,7 +672,7 @@ class TestCleanContentAllowed:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 201
         data = response.json()
         assert data["uri"] == "test://clean-resource"
@@ -693,7 +693,7 @@ class TestCleanContentAllowed:
             },
             headers=auth_headers
         )
-        
+
         assert response.status_code == 201
         data = response.json()
         assert data["name"] == "clean_prompt"
@@ -748,4 +748,3 @@ class TestErrorMessageClarity:
         data = response.json()
         # Should report the first violation found
         assert "violation_type" in data["detail"]
-

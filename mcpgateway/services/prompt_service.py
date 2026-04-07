@@ -50,7 +50,7 @@ from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, Prom
 from mcpgateway.schemas import PromptCreate, PromptMetrics, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.base_service import BaseService
-from mcpgateway.services.content_security import ContentSizeError, get_content_security_service, TemplateValidationError
+from mcpgateway.services.content_security import ContentPatternError, ContentSizeError, get_content_security_service, TemplateValidationError
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -959,6 +959,20 @@ class PromptService(BaseService):
             db.rollback()
             # Re-raise without wrapping so global/admin handlers can catch it
             raise tve
+        except ContentPatternError as cpe:
+            db.rollback()
+            logger.error(f"Malicious pattern detected in prompt template: {cpe.pattern_matched}")
+            structured_logger.log(
+                level="ERROR",
+                message="Prompt creation failed - Malicious pattern detected",
+                event_type="prompt_creation_failed",
+                component="prompt_service",
+                user_id=created_by,
+                user_email=owner_email,
+                error=cpe,
+                custom_fields={"prompt_name": prompt.name},
+            )
+            raise cpe
         except Exception as e:
             db.rollback()
 
@@ -2488,6 +2502,20 @@ class PromptService(BaseService):
             db.rollback()
             # Re-raise without wrapping so global/admin handlers can catch it
             raise tve
+        except ContentPatternError as cpe:
+            db.rollback()
+            logger.error(f"Malicious pattern detected in prompt template: {cpe.pattern_matched}")
+            structured_logger.log(
+                level="ERROR",
+                message="Prompt update failed - Malicious pattern detected",
+                event_type="prompt_update_failed",
+                component="prompt_service",
+                user_email=user_email,
+                resource_type="prompt",
+                resource_id=str(prompt_id),
+                error=cpe,
+            )
+            raise cpe
         except Exception as e:
             db.rollback()
 

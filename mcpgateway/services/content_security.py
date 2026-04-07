@@ -170,6 +170,63 @@ class ContentTypeError(Exception):
         super().__init__(f"MIME type '{mime_type}' is not allowed. Allowed types: {display}")
 
 
+class ContentPatternError(Exception):
+    """Raised when content contains malicious or blocked patterns.
+
+    This exception is raised when content validation detects:
+    - Script injection attempts (<script>, javascript:, etc.)
+    - Event handler attributes (onclick, onerror, etc.)
+    - Command injection patterns (;, &&, ||, etc.)
+    - Other dangerous patterns configured in CONTENT_BLOCKED_PATTERNS
+
+    Attributes:
+        pattern_matched: The specific pattern that was detected
+        content_type: Type of content being validated (e.g., "Resource content", "Prompt template")
+        content_snippet: Optional snippet of the content showing the violation
+        violation_type: Optional type of violation (e.g., "command_injection", "xss")
+
+    Examples:
+        >>> err = ContentPatternError("<script>", "Resource content")
+        >>> str(err)
+        "Malicious pattern detected in Resource content: <script>"
+        >>> err.pattern_matched
+        '<script>'
+        >>> err = ContentPatternError(";", "prompt", "ls; rm -rf /", "command_injection")
+        >>> err.violation_type
+        'command_injection'
+    """
+
+    def __init__(
+        self,
+        pattern_matched: str,
+        content_type: str = "content",
+        content_snippet: Optional[str] = None,
+        violation_type: Optional[str] = None,
+    ):
+        """Initialize ContentPatternError.
+
+        Args:
+            pattern_matched: The pattern that was detected in the content
+            content_type: Type of content (e.g., "Resource content", "Prompt template")
+            content_snippet: Optional snippet of content showing the violation
+            violation_type: Optional type of violation (e.g., "command_injection", "xss")
+        """
+        self.pattern_matched = pattern_matched
+        self.content_type = content_type
+        self.content_snippet = content_snippet
+        self.violation_type = violation_type
+
+        message = f"Malicious pattern detected in {content_type}: {pattern_matched}"
+        if violation_type:
+            message += f" (type: {violation_type})"
+        if content_snippet:
+            # Truncate snippet for readability
+            snippet_preview = content_snippet[:50] + "..." if len(content_snippet) > 50 else content_snippet
+            message += f" in content: {snippet_preview}"
+
+        super().__init__(message)
+
+
 class TemplateValidationError(Exception):
     """Raised when prompt template validation fails.
 

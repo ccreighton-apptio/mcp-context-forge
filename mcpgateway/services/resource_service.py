@@ -860,7 +860,7 @@ class ResourceService(BaseService):
                                 existing_resource.name = resource.name
                                 existing_resource.title = getattr(resource, "title", None)
                                 existing_resource.description = resource.description
-                                existing_resource.mime_type = bulk_mime_type
+                                existing_resource.mime_type = getattr(resource, "mime_type", None)
                                 existing_resource.size = getattr(resource, "size", None)
                                 existing_resource.uri_template = resource.uri_template
                                 existing_resource.tags = resource.tags or []
@@ -881,7 +881,7 @@ class ResourceService(BaseService):
                                     name=resource.name,
                                     title=getattr(resource, "title", None),
                                     description=resource.description,
-                                    mime_type=bulk_mime_type,
+                                    mime_type=getattr(resource, "mime_type", None),
                                     size=getattr(resource, "size", None),
                                     uri_template=resource.uri_template,
                                     gateway_id=getattr(resource, "gateway_id", None),
@@ -910,7 +910,7 @@ class ResourceService(BaseService):
                                 name=resource.name,
                                 title=getattr(resource, "title", None),
                                 description=resource.description,
-                                mime_type=bulk_mime_type,
+                                mime_type=getattr(resource, "mime_type", None),
                                 size=getattr(resource, "size", None),
                                 uri_template=resource.uri_template,
                                 gateway_id=getattr(resource, "gateway_id", None),
@@ -2999,6 +2999,9 @@ class ResourceService(BaseService):
 
             # Update content if provided
             if resource_update.content is not None:
+                # Initialize content security service
+                content_security = get_content_security_service()
+
                 # Validate content size before updating
                 content_security.validate_resource_size(
                     content=resource_update.content,

@@ -1189,12 +1189,12 @@ class TestPromptService:
             test_db.rollback.assert_called_once()
     @pytest.mark.asyncio
     async def test_update_prompt_content_pattern_error(self, prompt_service, test_db):
-        """Test that ContentPatternError is caught and re-raised during prompt update.
+        """Test that TemplateValidationError is caught and re-raised during prompt update.
 
         This test covers:
-        - prompt_service.py lines 2380-2381 (db.rollback and logger.error in ContentPatternError handler)
+        - prompt_service.py template validation with dangerous patterns
         """
-        from mcpgateway.services.content_security import ContentPatternError
+        from mcpgateway.services.content_security import TemplateValidationError
 
         existing = _build_db_prompt()
         existing.team_id = "team-123"
@@ -1207,27 +1207,25 @@ class TestPromptService:
         )
         test_db.rollback = Mock()
 
-        # Mock get_content_security_service to return a mock that raises ContentPatternError
+        # Mock get_content_security_service to return a mock that raises TemplateValidationError
         mock_security_service = Mock()
         mock_security_service.validate_prompt_size.return_value = None  # Size check passes
-        mock_security_service.validate_content_patterns.side_effect = ContentPatternError(
-            pattern_matched=";",
-            content_snippet="ls; rm -rf /",
-            violation_type="command_injection",
-            content_type="prompt"
+        mock_security_service.validate_prompt_template.side_effect = TemplateValidationError(
+            template_name="test-prompt",
+            reason="Template contains dangerous pattern that could lead to code injection",
+            pattern="__import__"
         )
 
         with patch("mcpgateway.services.prompt_service.get_content_security_service", return_value=mock_security_service):
-            # Use command injection pattern that passes Pydantic but fails pattern detection
-            upd = PromptUpdate(template="Run command: ls; rm -rf /")
+            # Use a simple template that passes Pydantic validation
+            upd = PromptUpdate(template="Hello {{name}}")
 
-            with pytest.raises(ContentPatternError) as exc_info:
+            with pytest.raises(TemplateValidationError) as exc_info:
                 await prompt_service.update_prompt(test_db, 1, upd)
 
             # Verify the error details
-            assert exc_info.value.violation_type == "command_injection"
-            assert exc_info.value.pattern_matched in [";", "rm -rf"]
-            assert exc_info.value.content_type == "prompt"
+            assert exc_info.value.template_name == "test-prompt"
+            assert "dangerous pattern" in exc_info.value.reason.lower()
 
             # Verify rollback was called
             test_db.rollback.assert_called_once()
