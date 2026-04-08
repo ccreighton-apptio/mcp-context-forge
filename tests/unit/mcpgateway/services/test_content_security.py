@@ -318,6 +318,92 @@ class TestContentTypeError:
         assert "type0" in message
         assert "type9" not in message  # Should be truncated
 
+class TestContentPatternError:
+    """Test the ContentPatternError exception."""
+
+    def test_content_pattern_error_basic_attributes(self):
+        """Test ContentPatternError has correct basic attributes."""
+        error = ContentPatternError("<script>", "Resource content")
+        assert error.pattern_matched == "<script>"
+        assert error.content_type == "Resource content"
+        assert error.content_snippet is None
+        assert error.violation_type is None
+
+    def test_content_pattern_error_with_violation_type(self):
+        """Test ContentPatternError with violation_type parameter."""
+        error = ContentPatternError(
+            pattern_matched="<script>",
+            content_type="Resource content",
+            violation_type="xss"
+        )
+        assert error.pattern_matched == "<script>"
+        assert error.content_type == "Resource content"
+        assert error.violation_type == "xss"
+        message = str(error)
+        assert "<script>" in message
+        assert "xss" in message
+        assert "type: xss" in message
+
+    def test_content_pattern_error_with_short_content_snippet(self):
+        """Test ContentPatternError with short content snippet."""
+        error = ContentPatternError(
+            pattern_matched="eval(",
+            content_type="Prompt template",
+            content_snippet="eval(user_input)",
+            violation_type="code_injection"
+        )
+        assert error.content_snippet == "eval(user_input)"
+        message = str(error)
+        assert "eval(user_input)" in message
+        assert "code_injection" in message
+        # Should not be truncated
+        assert "..." not in message
+
+    def test_content_pattern_error_with_long_content_snippet(self):
+        """Test ContentPatternError truncates long content snippets in message."""
+        long_content = "a" * 100
+        error = ContentPatternError(
+            pattern_matched="__import__",
+            content_type="Template",
+            content_snippet=long_content
+        )
+        assert error.content_snippet == long_content  # Original preserved
+        assert len(error.content_snippet) == 100
+        message = str(error)
+        # Message should contain truncated version
+        assert "..." in message
+        # Should show first 50 chars + "..."
+        assert "aaa..." in message
+
+    def test_content_pattern_error_message_format(self):
+        """Test ContentPatternError message formatting."""
+        error = ContentPatternError(
+            pattern_matched="javascript:",
+            content_type="Resource content"
+        )
+        message = str(error)
+        assert "Malicious pattern detected" in message
+        assert "Resource content" in message
+        assert "javascript:" in message
+
+    def test_content_pattern_error_with_all_parameters(self):
+        """Test ContentPatternError with all optional parameters."""
+        error = ContentPatternError(
+            pattern_matched="__import__",
+            content_type="Prompt template",
+            content_snippet="{{__import__('os')}}",
+            violation_type="python_injection"
+        )
+        assert error.pattern_matched == "__import__"
+        assert error.content_type == "Prompt template"
+        assert error.content_snippet == "{{__import__('os')}}"
+        assert error.violation_type == "python_injection"
+        message = str(error)
+        assert "__import__" in message
+        assert "python_injection" in message
+        assert "{{__import__('os')}}" in message
+
+
 
 class TestValidateResourceMimeType:
     """Test the validate_resource_mime_type method."""
