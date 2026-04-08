@@ -1224,11 +1224,11 @@ class TestPromptService:
 
             # Verify rollback was called
             test_db.rollback.assert_called_once()
-            
+
             # Verify logger.error was called (covers line 908)
             mock_logger.error.assert_called_once()
             assert "__import__" in str(mock_logger.error.call_args)
-            
+
             # Verify structured_logger.log was called (covers lines 909-918)
             mock_structured_logger.log.assert_called_once()
             call_args = mock_structured_logger.log.call_args
@@ -1248,7 +1248,7 @@ class TestPromptService:
         existing = _build_db_prompt()
         existing.team_id = "team-123"
         test_db.get = Mock(return_value=existing)
-        
+
         test_db.execute = Mock(
             side_effect=[
                 _make_execute_result(scalar=existing),  # get_for_update call
@@ -1283,11 +1283,11 @@ class TestPromptService:
 
             # Verify rollback was called (covers line 2444)
             test_db.rollback.assert_called_once()
-            
+
             # Verify logger.error was called (covers line 2445)
             mock_logger.error.assert_called_once()
             assert "eval(" in str(mock_logger.error.call_args)
-            
+
             # Verify structured_logger.log was called (covers line 2446)
             mock_structured_logger.log.assert_called_once()
             call_args = mock_structured_logger.log.call_args
