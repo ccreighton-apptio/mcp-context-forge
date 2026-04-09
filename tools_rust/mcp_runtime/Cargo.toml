@@ -17,6 +17,8 @@ axum = "0.8.8"
 base64 = "0.22.1"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 deadpool-postgres = "0.14.1"
+hickory-resolver = "0.25.0"
+ipnetwork = "0.21.0"
 futures-util = "0.3.31"
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-client", "trace"] }
