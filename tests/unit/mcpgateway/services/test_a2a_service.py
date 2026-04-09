@@ -1011,30 +1011,32 @@ class TestA2AAgentService:
         assert result == {"t1": "One", "t2": "Two"}
         assert service._batch_get_team_names(mock_db, []) == {}
 
-    def test_check_agent_access_variants(self, service):
+    @pytest.mark.asyncio
+    async def test_check_agent_access_variants(self, service):
         """Test access control logic for agent visibility."""
+        mock_db = MagicMock()
         agent = SimpleNamespace(visibility="public", team_id="team-1", owner_email="owner@example.com")
 
-        assert service._check_agent_access(agent, user_email=None, token_teams=None) is True
-        assert service._check_agent_access(agent, user_email=None, token_teams=["x"]) is True
+        assert await service._check_agent_access(mock_db, agent, user_email=None, token_teams=None) is True
+        assert await service._check_agent_access(mock_db, agent, user_email=None, token_teams=["x"]) is True
 
         agent.visibility = "team"
         # Full admin bypass (both None) grants access to team agents
-        assert service._check_agent_access(agent, user_email=None, token_teams=None) is True
+        assert await service._check_agent_access(mock_db, agent, user_email=None, token_teams=None) is True
         # No user context (user_email=None) denies access to non-public agents
-        assert service._check_agent_access(agent, user_email=None, token_teams=["team-1"]) is False
+        assert await service._check_agent_access(mock_db, agent, user_email=None, token_teams=["team-1"]) is False
         # Admin bypass: token_teams=None grants access regardless of user_email
-        assert service._check_agent_access(agent, user_email="admin@example.com", token_teams=None) is True
+        assert await service._check_agent_access(mock_db, agent, user_email="admin@example.com", token_teams=None) is True
         # With user context, team membership grants access
-        assert service._check_agent_access(agent, user_email="someone@example.com", token_teams=["team-1"]) is True
-        assert service._check_agent_access(agent, user_email="someone@example.com", token_teams=["other"]) is False
+        assert await service._check_agent_access(mock_db, agent, user_email="someone@example.com", token_teams=["team-1"]) is True
+        assert await service._check_agent_access(mock_db, agent, user_email="someone@example.com", token_teams=["other"]) is False
 
         agent.visibility = "private"
         # Public-only tokens (token_teams=[]) cannot access private agents even as owner
-        assert service._check_agent_access(agent, user_email="owner@example.com", token_teams=[]) is False
+        assert await service._check_agent_access(mock_db, agent, user_email="owner@example.com", token_teams=[]) is False
         # Team-scoped tokens: owner can access their own private agents
-        assert service._check_agent_access(agent, user_email="owner@example.com", token_teams=["team-1"]) is True
-        assert service._check_agent_access(agent, user_email="other@example.com", token_teams=["team-1"]) is False
+        assert await service._check_agent_access(mock_db, agent, user_email="owner@example.com", token_teams=["team-1"]) is True
+        assert await service._check_agent_access(mock_db, agent, user_email="other@example.com", token_teams=["team-1"]) is False
 
     def test_apply_visibility_filter(self, service):
         """Test visibility filter branches."""

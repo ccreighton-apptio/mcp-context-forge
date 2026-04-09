@@ -262,8 +262,9 @@ class A2AAgentService(BaseService):
 
         return {team.id: team.name for team in teams}
 
-    def _check_agent_access(
+    async def _check_agent_access(
         self,
+        db: Session,
         agent: DbA2AAgent,
         user_email: Optional[str],
         token_teams: Optional[List[str]],
@@ -278,6 +279,7 @@ class A2AAgentService(BaseService):
         - private visibility: Allowed if owner (requires user_email and non-empty token_teams)
 
         Args:
+            db: Database session for admin lookup
             agent: The agent to check access for
             user_email: User's email for owner matching
             token_teams: Teams from JWT. None = admin bypass, [] = public-only (no owner access)
@@ -292,6 +294,10 @@ class A2AAgentService(BaseService):
         # Admin bypass: token_teams=None AND user_email=None means unrestricted admin
         # This happens when is_admin=True and no team scoping in token
         if token_teams is None and user_email is None:
+            return True
+
+        # Admin bypass: check if user is an admin in the database
+        if user_email and await self._is_user_admin(db, user_email):
             return True
 
         # No user context (but not admin) = deny access to non-public agents
@@ -935,7 +941,7 @@ class A2AAgentService(BaseService):
 
         # SECURITY: Check visibility/team access
         # Return 404 (not 403) to avoid leaking existence of private agents
-        if not self._check_agent_access(agent, user_email, token_teams):
+        if not await self._check_agent_access(db, agent, user_email, token_teams):
             raise A2AAgentNotFoundError(f"A2A Agent not found with ID: {agent_id}")
 
         # Delegate conversion and masking to convert_agent_to_read()
@@ -1476,7 +1482,7 @@ class A2AAgentService(BaseService):
         # SECURITY: Check visibility/team access WHILE ROW IS LOCKED
         # Return 404 (not 403) to avoid leaking existence of private agents
         # ═══════════════════════════════════════════════════════════════════════════
-        if not self._check_agent_access(agent, user_email, token_teams):
+        if not await self._check_agent_access(db, agent, user_email, token_teams):
             raise A2AAgentNotFoundError(f"A2A Agent not found with name: {agent_name}")
 
         if not agent.enabled:
