@@ -61,13 +61,13 @@ def test_app():
     mp.setattr(settings, "content_pattern_detection_enabled", True, raising=True)
     mp.setattr(settings, "content_pattern_validation_mode", "strict", raising=True)
     mp.setattr(settings, "content_pattern_cache_enabled", True, raising=True)
-    
+
     # Enable admin API for tests - patch both settings and the constant in main.py
     mp.setattr(settings, "mcpgateway_admin_api_enabled", True, raising=True)
 
     import mcpgateway.db as db_mod
     import mcpgateway.main as main_mod
-    
+
     # Patch the ADMIN_API_ENABLED constant that was read at import time
     mp.setattr(main_mod, "ADMIN_API_ENABLED", True, raising=True)
 
@@ -80,7 +80,7 @@ def test_app():
 
     # Create schema
     Base.metadata.create_all(bind=engine)
-    
+
     # Import app AFTER patching settings
     from mcpgateway.main import app
 

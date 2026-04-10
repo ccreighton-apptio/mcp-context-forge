@@ -473,22 +473,22 @@ class ContentSecurityService:
         ip_address: Optional[str] = None,
     ) -> None:
         """Detect malicious patterns in content (US-3).
-        
+
         Scans content for XSS, command injection, SQL injection, and template injection patterns.
         Behavior depends on content_pattern_validation_mode:
         - strict: Raises ContentPatternError on detection
         - moderate: Logs warning and raises ContentPatternError
         - lenient: Logs warning only, allows content
-        
+
         Args:
             content: Content to scan for malicious patterns
             content_type: Type of content (e.g., "Resource content", "Prompt template")
             user_email: Optional user email for audit logging (sanitized)
             ip_address: Optional IP address for audit logging (sanitized)
-            
+
         Raises:
             ContentPatternError: If malicious pattern is detected (strict/moderate modes)
-            
+
         Examples:
             >>> service = ContentSecurityService()
             >>> service.detect_malicious_patterns("Hello world")  # OK
@@ -501,26 +501,28 @@ class ContentSecurityService:
         if not settings.content_pattern_detection_enabled:
             logger.debug("Pattern detection disabled via CONTENT_PATTERN_DETECTION_ENABLED")
             return
-        
+
         blocked_patterns = settings.content_blocked_patterns
         validation_mode = settings.content_pattern_validation_mode
-        
+
         for pattern in blocked_patterns:
             try:
                 # Use re.search with timeout to prevent ReDoS (CWE-400 fix)
                 # Python 3.13+ supports timeout parameter
+                # Standard
                 import sys
+
                 if sys.version_info >= (3, 13):
                     match = re.search(pattern, content, re.IGNORECASE | re.DOTALL, timeout=1.0)
                 else:
                     # Fallback for Python < 3.13 - no timeout protection
                     # ReDoS mitigation relies on pattern complexity validation in config.py
                     match = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
-                    
+
                 if match:
                     # Determine violation type from pattern
                     violation_type = self._classify_violation(pattern, match.group(0))
-                    
+
                     # Log with sanitized PII
                     sanitized = _sanitize_pii_for_logging(user_email, ip_address)
                     logger.warning(
@@ -531,22 +533,22 @@ class ContentSecurityService:
                             "pattern_length": len(pattern),  # Don't log full pattern for security
                             "validation_mode": validation_mode,
                             **sanitized,
-                        }
+                        },
                     )
-                    
+
                     # In lenient mode, just log and continue
                     if validation_mode == "lenient":
                         logger.info(f"Lenient mode: allowing {content_type} with {violation_type} pattern")
                         return
-                    
+
                     # In strict or moderate mode, raise exception
                     raise ContentPatternError(
                         pattern_matched=match.group(0)[:50],  # Truncate for security
                         content_type=content_type,
-                        content_snippet=content[max(0, match.start()-20):match.end()+20],
+                        content_snippet=content[max(0, match.start() - 20) : match.end() + 20],
                         violation_type=violation_type,
                     )
-                    
+
             except TimeoutError:
                 # ReDoS protection (CWE-400)
                 sanitized = _sanitize_pii_for_logging(user_email, ip_address)
@@ -556,7 +558,7 @@ class ContentSecurityService:
                         "pattern_length": len(pattern),
                         "content_type": content_type,
                         **sanitized,
-                    }
+                    },
                 )
                 raise ContentPatternError(
                     pattern_matched="[timeout]",
@@ -566,16 +568,16 @@ class ContentSecurityService:
 
     def _classify_violation(self, pattern: str, matched_text: str) -> str:
         """Classify violation type based on pattern and matched text.
-        
+
         Args:
             pattern: The regex pattern that matched
             matched_text: The actual text that was matched
-            
+
         Returns:
             Violation type string (xss, command_injection, sql_injection, template_injection, unknown)
         """
         matched_lower = matched_text.lower()
-        
+
         # Check in order of specificity to avoid misclassification
         # Template injection patterns
         if "{{" in matched_text or "{%" in matched_text or "${" in matched_text:
@@ -639,7 +641,7 @@ class ContentSecurityService:
             return
 
         template_name = name or "unnamed"
-        
+
         # Step 0: Check for malicious patterns (US-3) BEFORE template validation
         # This makes the ContentPatternError handlers in prompt_service.py reachable
         self.detect_malicious_patterns(
@@ -678,19 +680,9 @@ class ContentSecurityService:
             meta.find_undeclared_variables(ast)
         except Exception as e:
             sanitized = _sanitize_pii_for_logging(user_email, ip_address)
-            logger.warning(
-                "Template Jinja2 syntax validation failed",
-                extra={
-                    "template_name": template_name,
-                    "error_type": type(e).__name__,  # Log error type, not message
-                    **sanitized
-                }
-            )
+            logger.warning("Template Jinja2 syntax validation failed", extra={"template_name": template_name, "error_type": type(e).__name__, **sanitized})  # Log error type, not message
             # Generic message - don't leak template fragments (CWE-209 fix)
-            raise TemplateValidationError(
-                template_name,
-                "Invalid Jinja2 syntax - template contains parsing errors"
-            )
+            raise TemplateValidationError(template_name, "Invalid Jinja2 syntax - template contains parsing errors")
 
         logger.debug(f"Template validation passed for: {template_name}")
 
