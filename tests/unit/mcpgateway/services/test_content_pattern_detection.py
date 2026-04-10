@@ -1,0 +1,263 @@
+# -*- coding: utf-8 -*-
+"""Unit tests for malicious pattern detection (US-3)
+
+Tests the ContentSecurityService.detect_malicious_patterns method
+to verify XSS, command injection, SQL injection, and template injection detection.
+"""
+import pytest
+from unittest.mock import patch
+
+from mcpgateway.services.content_security import (
+    ContentSecurityService,
+    ContentPatternError,
+)
+
+
+class TestMaliciousPatternDetection:
+    """Test malicious pattern detection in ContentSecurityService."""
+
+    def test_detect_xss_script_tag(self):
+        """Test detection of <script> tags."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Hello <script>alert('XSS')</script> World",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "xss"
+        assert exc_info.value.content_type == "Resource content"
+
+    def test_detect_xss_javascript_protocol(self):
+        """Test detection of javascript: protocol."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content='<a href="javascript:alert(1)">Click</a>',
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "xss"
+
+    def test_detect_xss_event_handler(self):
+        """Test detection of event handlers."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content='<img src="x" onerror="alert(1)">',
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "xss"
+
+    def test_detect_command_injection_semicolon(self):
+        """Test detection of command injection with semicolon."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Run: ls -la; rm -rf /",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "command_injection"
+
+    def test_detect_command_injection_chaining(self):
+        """Test detection of command chaining with &&."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="echo hello && cat /etc/passwd",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "command_injection"
+
+    def test_detect_command_injection_backticks(self):
+        """Test detection of backtick command execution."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Output: `whoami`",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "command_injection"
+
+    def test_detect_sql_injection_keywords(self):
+        """Test detection of SQL keywords."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Query: SELECT * FROM users WHERE id=1",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "sql_injection"
+
+    def test_detect_sql_injection_comment(self):
+        """Test detection of SQL comment injection."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Input: admin'-- ",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "sql_injection"
+
+    def test_detect_template_injection_jinja(self):
+        """Test detection of Jinja2 template injection."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="User input: {{ config.items() }}",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "template_injection"
+
+    def test_detect_template_injection_expression(self):
+        """Test detection of ${} expression injection."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Value: ${7*7}",
+                content_type="Resource content"
+            )
+        
+        assert exc_info.value.violation_type == "template_injection"
+
+    def test_clean_content_allowed(self):
+        """Test that clean content passes validation."""
+        service = ContentSecurityService()
+        
+        # Should not raise
+        service.detect_malicious_patterns(
+            content="This is clean content with no malicious patterns",
+            content_type="Resource content"
+        )
+
+    def test_lenient_mode_allows_malicious_content(self):
+        """Test that lenient mode logs but allows malicious content."""
+        service = ContentSecurityService()
+        
+        with patch("mcpgateway.services.content_security.settings") as mock_settings:
+            mock_settings.content_pattern_detection_enabled = True
+            mock_settings.content_pattern_validation_mode = "lenient"
+            mock_settings.content_blocked_patterns = [r"<script[^>]*>.*?</script>"]
+            
+            # Should not raise in lenient mode
+            service.detect_malicious_patterns(
+                content="<script>alert('XSS')</script>",
+                content_type="Resource content"
+            )
+
+    def test_disabled_detection_allows_all(self):
+        """Test that disabled detection allows all content."""
+        service = ContentSecurityService()
+        
+        with patch("mcpgateway.services.content_security.settings") as mock_settings:
+            mock_settings.content_pattern_detection_enabled = False
+            
+            # Should not raise when disabled
+            service.detect_malicious_patterns(
+                content="<script>alert('XSS')</script>",
+                content_type="Resource content"
+            )
+
+    def test_pattern_matched_truncated(self):
+        """Test that pattern_matched is truncated for security."""
+        service = ContentSecurityService()
+        
+        long_script = "<script>" + "A" * 100 + "</script>"
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content=long_script,
+                content_type="Resource content"
+            )
+        
+        # pattern_matched should be truncated to 50 chars
+        assert len(exc_info.value.pattern_matched) <= 50
+
+    def test_content_snippet_provided(self):
+        """Test that content snippet is provided with context."""
+        service = ContentSecurityService()
+        
+        with pytest.raises(ContentPatternError) as exc_info:
+            service.detect_malicious_patterns(
+                content="Before text <script>alert('XSS')</script> After text",
+                content_type="Resource content"
+            )
+        
+        # Should have content snippet with context
+        assert exc_info.value.content_snippet is not None
+        assert "Before" in exc_info.value.content_snippet or "After" in exc_info.value.content_snippet
+
+
+class TestClassifyViolation:
+    """Test violation type classification."""
+
+    def test_classify_xss_script(self):
+        """Test classification of script tag as XSS."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"<script",
+            matched_text="<script>alert(1)</script>"
+        )
+        assert result == "xss"
+
+    def test_classify_xss_javascript(self):
+        """Test classification of javascript: as XSS."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"javascript:",
+            matched_text="javascript:alert(1)"
+        )
+        assert result == "xss"
+
+    def test_classify_command_injection(self):
+        """Test classification of command injection."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"&&",
+            matched_text="ls && rm -rf /"
+        )
+        assert result == "command_injection"
+
+    def test_classify_sql_injection(self):
+        """Test classification of SQL injection."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"SELECT",
+            matched_text="SELECT * FROM users"
+        )
+        assert result == "sql_injection"
+
+    def test_classify_template_injection(self):
+        """Test classification of template injection."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"\{\{",
+            matched_text="{{ config.items() }}"
+        )
+        assert result == "template_injection"
+
+    def test_classify_unknown(self):
+        """Test classification of unknown pattern."""
+        service = ContentSecurityService()
+        result = service._classify_violation(
+            pattern=r"unknown",
+            matched_text="unknown pattern"
+        )
+        assert result == "unknown"

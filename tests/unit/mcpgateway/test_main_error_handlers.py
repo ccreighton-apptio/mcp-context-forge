@@ -716,7 +716,8 @@ def test_template_validation_exception_handler():
     assert result["detail"]["error"] == "Template validation failed"
     assert result["detail"]["template_name"] == "test-template"
     assert result["detail"]["reason"] == "Dangerous pattern detected"
-    assert result["detail"]["pattern"] == "__import__"
+    # Pattern should NOT be included in response (CWE-209 fix - information disclosure)
+    assert "pattern" not in result["detail"]
 
     # Test without pattern
     exc_without_pattern = TemplateValidationError(

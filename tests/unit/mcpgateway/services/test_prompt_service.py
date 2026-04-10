@@ -387,7 +387,8 @@ class TestPromptService:
 
         with pytest.raises(TemplateValidationError) as exc_info:
             await prompt_service.register_prompt(test_db, pc)
-        assert "no filter named" in str(exc_info.value).lower()
+        # Generic error message to avoid leaking template details (CWE-209 fix)
+        assert "invalid jinja2 syntax" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

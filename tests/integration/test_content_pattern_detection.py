@@ -25,7 +25,7 @@ from starlette.testclient import TestClient
 from mcpgateway.auth import get_current_user
 from mcpgateway.utils.verify_credentials import require_auth
 from mcpgateway.db import Base
-from mcpgateway.main import app
+# Don't import app at module level - import in fixture after patching
 from mcpgateway.middleware.rbac import (
     get_current_user_with_permissions,
     get_db as rbac_get_db,
@@ -57,13 +57,19 @@ def test_app():
 
     mp.setattr(settings, "database_url", url, raising=False)
 
-    # Enable pattern detection for tests
-    mp.setattr(settings, "content_pattern_detection_enabled", True, raising=False)
-    mp.setattr(settings, "content_pattern_validation_mode", "strict", raising=False)
-    mp.setattr(settings, "content_pattern_cache_enabled", True, raising=False)
+    # Enable pattern detection for tests (use correct config keys with raising=True)
+    mp.setattr(settings, "content_pattern_detection_enabled", True, raising=True)
+    mp.setattr(settings, "content_pattern_validation_mode", "strict", raising=True)
+    mp.setattr(settings, "content_pattern_cache_enabled", True, raising=True)
+    
+    # Enable admin API for tests - patch both settings and the constant in main.py
+    mp.setattr(settings, "mcpgateway_admin_api_enabled", True, raising=True)
 
     import mcpgateway.db as db_mod
     import mcpgateway.main as main_mod
+    
+    # Patch the ADMIN_API_ENABLED constant that was read at import time
+    mp.setattr(main_mod, "ADMIN_API_ENABLED", True, raising=True)
 
     engine = create_engine(url, connect_args={"check_same_thread": False}, poolclass=StaticPool)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -74,6 +80,9 @@ def test_app():
 
     # Create schema
     Base.metadata.create_all(bind=engine)
+    
+    # Import app AFTER patching settings
+    from mcpgateway.main import app
 
     # Create mock user for basic auth
     mock_email_user = MagicMock()

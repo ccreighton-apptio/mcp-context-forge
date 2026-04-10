@@ -1661,6 +1661,43 @@ class Settings(BaseSettings):
         description="Regex patterns for dangerous template constructs (US-4). Blocks Python injection attempts in Jinja2 templates.",
     )
 
+    # Content Security - Malicious Pattern Detection (US-3)
+    content_pattern_detection_enabled: bool = Field(
+        default=True,
+        description="Enable malicious pattern detection in resources and prompts (US-3). Scans for XSS, command injection, SQL injection, and template injection patterns.",
+    )
+    content_pattern_validation_mode: str = Field(
+        default="strict",
+        description="Validation mode for pattern detection (US-3): 'strict' (block), 'moderate' (warn+block), 'lenient' (warn only).",
+    )
+    content_blocked_patterns: List[str] = Field(
+        default_factory=lambda: [
+            # XSS patterns
+            r"<script[^>]*>.*?</script>",  # Script tags
+            r"javascript:",  # JavaScript protocol
+            r"on\w+\s*=",  # Event handlers: onclick, onerror, etc.
+            r"<iframe[^>]*>",  # Iframe injection
+            # Command injection
+            r";\s*rm\s+-rf",  # Dangerous rm command
+            r"&&|\|\|",  # Command chaining
+            r"`[^`]+`",  # Backtick execution
+            r"\$\([^)]+\)",  # Command substitution
+            # SQL injection
+            r"(?i)(union|select|insert|update|delete|drop)\s+",  # SQL keywords
+            r"--\s*$",  # SQL comments
+            r"'\s*or\s*'1'\s*=\s*'1",  # Classic SQL injection
+            # Template injection
+            r"\{\{.*config.*\}\}",  # Jinja2 config access
+            r"\{%.*for.*%\}",  # Jinja2 loops
+            r"\$\{.*\}",  # Expression evaluation
+        ],
+        description="Regex patterns for malicious content detection (US-3). Blocks XSS, command injection, SQL injection, and template injection attempts.",
+    )
+    content_pattern_cache_enabled: bool = Field(
+        default=True,
+        description="Enable caching of pattern validation results (US-3). Improves performance by caching validation outcomes.",
+    )
+
     # MCP Session Pool - reduces per-request latency from ~20ms to ~1-2ms
     # Disabled by default for safety. Enable explicitly in production after testing.
     mcp_session_pool_enabled: bool = False

@@ -145,7 +145,7 @@ from mcpgateway.schemas import (
 from mcpgateway.services.a2a_service import A2AAgentError, A2AAgentNameConflictError, A2AAgentNotFoundError, A2AAgentService
 from mcpgateway.services.cancellation_service import cancellation_service
 from mcpgateway.services.completion_service import CompletionService
-from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, TemplateValidationError
+from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, ContentPatternError, TemplateValidationError
 from mcpgateway.services.email_auth_service import EmailAuthService
 from mcpgateway.services.export_service import ExportError, ExportService
 from mcpgateway.services.gateway_service import GatewayConnectionError, GatewayDuplicateConflictError, GatewayError, GatewayNameConflictError, GatewayNotFoundError
@@ -2353,9 +2353,36 @@ async def template_validation_exception_handler(_request: Request, exc: Template
         "template_name": exc.template_name,
         "reason": exc.reason,
     }
-    if exc.pattern:
-        error_detail["pattern"] = exc.pattern
+    # DO NOT include pattern - it leaks internal security policy (CWE-209 fix)
     return ORJSONResponse(status_code=400, content={"detail": error_detail})
+
+
+@app.exception_handler(ContentPatternError)
+async def content_pattern_error_handler(_request: Request, exc: ContentPatternError):
+    """Handle malicious pattern detection errors globally (US-3).
+    
+    Returns HTTP 400 with structured error response.
+    Does NOT leak internal patterns or content snippets (CWE-209 fix).
+    
+    Args:
+        _request: The incoming request (unused, required by FastAPI handler interface).
+        exc: The ContentPatternError with violation details.
+        
+    Returns:
+        ORJSONResponse: A 400 Bad Request response with structured error details.
+    """
+    return ORJSONResponse(
+        status_code=400,
+        content={
+            "detail": {
+                "error": "Malicious pattern detected",
+                "message": f"Content validation failed: {exc.content_type} contains potentially malicious patterns",
+                "violation_type": exc.violation_type or "unknown",
+                "content_type": exc.content_type,
+                # DO NOT include pattern_matched or content_snippet (security)
+            }
+        }
+    )
 
 
 # RFC 9110 §5.6.2 'token' pattern for header field names:

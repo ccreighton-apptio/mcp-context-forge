@@ -64,7 +64,7 @@ from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, Reso
 from mcpgateway.schemas import ResourceCreate, ResourceMetrics, ResourceRead, ResourceSubscription, ResourceUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.base_service import BaseService
-from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, get_content_security_service
+from mcpgateway.services.content_security import ContentSizeError, ContentTypeError, ContentPatternError, get_content_security_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
@@ -518,6 +518,16 @@ class ResourceService(BaseService):
                     content_to_validate = str(resource.content)
 
             content_security.validate_resource_size(content=content_to_validate, uri=resource.uri, user_email=created_by, ip_address=created_from_ip)
+
+            # Validate content for malicious patterns (US-3) - CWE-116 fix
+            if content_to_validate:
+                content_str = content_to_validate if isinstance(content_to_validate, str) else content_to_validate.decode('utf-8', errors='ignore')
+                content_security.detect_malicious_patterns(
+                    content=content_str,
+                    content_type="Resource content",
+                    user_email=created_by,
+                    ip_address=created_from_ip,
+                )
 
             # Prefer URL-detected MIME type over user-provided to ensure accuracy
             # This prevents users from entering incorrect MIME types
@@ -3006,6 +3016,15 @@ class ResourceService(BaseService):
                 content_security.validate_resource_size(
                     content=resource_update.content,
                     uri=resource_update.uri or resource.uri,
+                    user_email=modified_by or user_email,
+                    ip_address=modified_from_ip,
+                )
+
+                # Validate content for malicious patterns (US-3) - CWE-116 fix
+                content_str = resource_update.content if isinstance(resource_update.content, str) else resource_update.content.decode('utf-8', errors='ignore')
+                content_security.detect_malicious_patterns(
+                    content=content_str,
+                    content_type="Resource content",
                     user_email=modified_by or user_email,
                     ip_address=modified_from_ip,
                 )
