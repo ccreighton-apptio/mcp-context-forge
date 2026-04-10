@@ -261,3 +261,51 @@ class TestClassifyViolation:
             matched_text="unknown pattern"
         )
         assert result == "unknown"
+
+
+class TestTimeoutAndEdgeCases:
+    """Test timeout handling and edge cases for coverage."""
+
+    def test_timeout_error_handling(self):
+        """Test TimeoutError is caught and converted to ContentPatternError."""
+        service = ContentSecurityService()
+        
+        # Mock re.search to raise TimeoutError
+        with patch("mcpgateway.services.content_security.re.search") as mock_search:
+            mock_search.side_effect = TimeoutError("Pattern timeout")
+            
+            with pytest.raises(ContentPatternError) as exc_info:
+                service.detect_malicious_patterns(
+                    content="test content",
+                    content_type="Test content"
+                )
+            
+            assert exc_info.value.violation_type == "redos_timeout"
+            assert exc_info.value.pattern_matched == "[timeout]"
+
+    def test_fallback_path_no_match(self):
+        """Test fallback path when no patterns match (covers line 514 fallback)."""
+        service = ContentSecurityService()
+        
+        # Clean content should not raise - tests the no-match path
+        service.detect_malicious_patterns(
+            content="Hello world, this is clean content",
+            content_type="Test"
+        )
+        # If we get here, the fallback path worked (no exception)
+
+    def test_lenient_mode_return_path(self):
+        """Test lenient mode allows malicious content and returns early."""
+        service = ContentSecurityService()
+        
+        with patch("mcpgateway.services.content_security.settings") as mock_settings:
+            mock_settings.content_pattern_detection_enabled = True
+            mock_settings.content_pattern_validation_mode = "lenient"
+            mock_settings.content_blocked_patterns = [r"<script"]
+            
+            # Should NOT raise in lenient mode
+            service.detect_malicious_patterns(
+                content="<script>alert(1)</script>",
+                content_type="Test"
+            )
+            # If we get here without exception, lenient mode worked
