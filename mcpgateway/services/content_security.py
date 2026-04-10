@@ -513,7 +513,7 @@ class ContentSecurityService:
                 import sys
 
                 if sys.version_info >= (3, 13):
-                    match = re.search(pattern, content, re.IGNORECASE | re.DOTALL, timeout=1.0)
+                    match = re.search(pattern, content, re.IGNORECASE | re.DOTALL, timeout=1.0)  # pylint: disable=unexpected-keyword-arg
                 else:
                     # Fallback for Python < 3.13 - no timeout protection
                     # ReDoS mitigation relies on pattern complexity validation in config.py
@@ -583,16 +583,15 @@ class ContentSecurityService:
         if "{{" in matched_text or "{%" in matched_text or "${" in matched_text:
             return "template_injection"
         # SQL injection patterns
-        elif any(sql in matched_lower for sql in ["select", "union", "insert", "delete", "drop", "update"]) or matched_text.strip().endswith("--"):
+        if any(sql in matched_lower for sql in ["select", "union", "insert", "delete", "drop", "update"]) or matched_text.strip().endswith("--"):
             return "sql_injection"
         # Command injection patterns
-        elif any(cmd in matched_lower for cmd in ["rm -rf", "&&", "||"]) or "`" in matched_text or "$(" in matched_text:
+        if any(cmd in matched_lower for cmd in ["rm -rf", "&&", "||"]) or "`" in matched_text or "$(" in matched_text:
             return "command_injection"
         # XSS patterns (check last to avoid false positives)
-        elif "<script" in matched_lower or "javascript:" in matched_lower or "<iframe" in matched_lower or (r"on\w+\s*=" in pattern):
+        if "<script" in matched_lower or "javascript:" in matched_lower or "<iframe" in matched_lower or (r"on\w+\s*=" in pattern):
             return "xss"
-        else:
-            return "unknown"
+        return "unknown"
 
     def validate_prompt_template(
         self,
