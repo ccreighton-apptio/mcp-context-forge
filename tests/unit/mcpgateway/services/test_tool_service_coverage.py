@@ -349,10 +349,10 @@ class TestModuleGetattr:
         old = ts_module._tool_service_instance
         ts_module._tool_service_instance = None
         try:
-            instance = ts_module.__getattr__("tool_service")
+            instance = getattr(ts_module, "tool_service")
             assert isinstance(instance, ToolService)
             # Second access should return the same instance
-            instance2 = ts_module.__getattr__("tool_service")
+            instance2 = getattr(ts_module, "tool_service")
             assert instance is instance2
         finally:
             ts_module._tool_service_instance = old
@@ -363,7 +363,7 @@ class TestModuleGetattr:
         import mcpgateway.services.tool_service as ts_module
 
         with pytest.raises(AttributeError, match="has no attribute"):
-            ts_module.__getattr__("nonexistent_attr")
+            getattr(ts_module, "nonexistent_attr")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1819,7 +1819,6 @@ class TestValidatorClassAndCheck:
                 if call_count["n"] <= 1:
                     raise jsonschema.exceptions.SchemaError("primary fail")
                 # Second call in final fallback path - just return OK
-                return None
 
         class FallbackFail:
             @staticmethod
@@ -2035,7 +2034,7 @@ class TestCreateToolFromA2AAgent:
         tool_service.register_tool = AsyncMock(return_value=mock_tool_read)
         db.get.return_value = MagicMock()
 
-        result = await tool_service.create_tool_from_a2a_agent(db, agent, created_by="admin")
+        await tool_service.create_tool_from_a2a_agent(db, agent, created_by="admin")
 
         # Verify register_tool was called
         tool_service.register_tool.assert_awaited_once()
@@ -2319,7 +2318,7 @@ class TestCallA2AAgent:
             patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock, return_value=mock_client),
             patch("mcpgateway.services.a2a_protocol.decode_auth", return_value={"api_key": "my-api-key"}),  # pragma: allowlist secret
         ):
-            result = await tool_service._call_a2a_agent(agent, {"query": "test"})
+            await tool_service._call_a2a_agent(agent, {"query": "test"})
         call_kwargs = mock_client.post.call_args
         assert "Bearer my-api-key" in call_kwargs[1]["headers"]["Authorization"]
 
@@ -2343,7 +2342,7 @@ class TestRecordToolMetricSync:
             def __exit__(self, *args):
                 return False
 
-        monkeypatch.setattr("mcpgateway.services.tool_service.fresh_db_session", lambda: DummySession())
+        monkeypatch.setattr("mcpgateway.services.tool_service.fresh_db_session", DummySession)
 
         with patch.object(tool_service, "_record_tool_metric_by_id") as mock_record:
             tool_service._record_tool_metric_sync("t1", 1.0, True, None)
@@ -2796,7 +2795,6 @@ class TestCallA2AAgentCoverage:
             # Allow the initial "Calling A2A agent..." log, but force an exception for the request_data log.
             if "invoke tool request_data prepared" in str(msg):
                 raise RuntimeError("logger boom")
-            return None
 
         with patch("mcpgateway.services.tool_service.logger") as mock_logger:
             mock_logger.info.side_effect = _info_side_effect
@@ -5892,7 +5890,7 @@ class TestInvokeToolPluginContext:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.get = fake_get
 
-            result = await tool_service.invoke_tool(
+            await tool_service.invoke_tool(
                 db,
                 "test_tool",
                 {},
@@ -6208,7 +6206,7 @@ class TestInvokeToolMcpSessionAffinity:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.get = fake_get
 
-            result = await tool_service.invoke_tool(
+            await tool_service.invoke_tool(
                 db,
                 "test_tool",
                 {},
@@ -6579,7 +6577,7 @@ class TestInvokeToolA2A:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.post = fake_post
 
-            result = await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
+            await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
         assert captured_headers.get("Authorization") == "Bearer my-api-key"
 
     @pytest.mark.asyncio
@@ -6823,7 +6821,7 @@ class TestInvokeToolA2A:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.post = fake_post
 
-            result = await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
+            await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
         assert captured_headers.get("Authorization") == "Bearer dict-token"
 
     @pytest.mark.asyncio
@@ -6866,7 +6864,7 @@ class TestInvokeToolA2A:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.post = fake_post
 
-            result = await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
+            await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
         assert captured_headers.get("Authorization") == "Basic decrypted-value"
 
     @pytest.mark.asyncio
@@ -6909,7 +6907,7 @@ class TestInvokeToolA2A:
             tool_service._http_client = AsyncMock()
             tool_service._http_client.post = fake_post
 
-            result = await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
+            await tool_service.invoke_tool(db, "test_tool", {"query": "test"})
         assert captured_headers.get("X-Custom-Auth") == "custom-value"
 
     @pytest.mark.asyncio

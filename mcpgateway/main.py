@@ -8997,10 +8997,14 @@ async def handle_internal_a2a_agent_resolve(request: Request, agent_name: str):
 
         return ORJSONResponse(status_code=200, content=result)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9044,10 +9048,14 @@ async def handle_internal_a2a_agent_card(request: Request, agent_name: str):
             return ORJSONResponse(status_code=404, content={"error": f"agent '{agent_name}' not found"})
         return ORJSONResponse(status_code=200, content=card)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9080,10 +9088,14 @@ async def handle_internal_a2a_tasks_get(request: Request):
             return ORJSONResponse(status_code=404, content={"error": f"task '{task_id}' not found"})
         return ORJSONResponse(status_code=200, content=task)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9116,10 +9128,14 @@ async def handle_internal_a2a_tasks_list(request: Request):
         tasks = service.list_tasks(db, agent_id=agent_id, state=state, limit=limit, offset=offset, user_email=user_email, token_teams=token_teams)
         return ORJSONResponse(status_code=200, content={"tasks": tasks})
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9152,10 +9168,14 @@ async def handle_internal_a2a_tasks_cancel(request: Request):
             return ORJSONResponse(status_code=404, content={"error": f"task '{task_id}' not found"})
         return ORJSONResponse(status_code=200, content=task)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9174,20 +9194,31 @@ async def handle_internal_a2a_push_create(request: Request):
         if not body.get("a2a_agent_id") or not body.get("task_id") or not body.get("webhook_url"):
             return ORJSONResponse(status_code=400, content={"error": "a2a_agent_id, task_id, and webhook_url are required"})
 
+        # Validate webhook URL through the schema to enforce SSRF protection.
         # First-Party
+        from mcpgateway.schemas import A2APushNotificationConfigCreate  # pylint: disable=import-outside-toplevel
         from mcpgateway.services.a2a_service import A2AAgentService  # pylint: disable=import-outside-toplevel
+
+        try:
+            validated = A2APushNotificationConfigCreate(**body)
+        except Exception as validation_err:
+            return ORJSONResponse(status_code=400, content={"error": f"invalid push config: {validation_err}"})
 
         user_email, token_teams = _get_internal_a2a_scope_context(request)
         service = A2AAgentService()
         if not service._check_agent_access_by_id(db, body["a2a_agent_id"], user_email, token_teams):  # pylint: disable=protected-access
             return ORJSONResponse(status_code=404, content={"error": "agent not found"})
-        cfg = service.create_push_config(db, body)
+        cfg = service.create_push_config(db, validated.model_dump())
         return ORJSONResponse(status_code=200, content=cfg)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9213,17 +9244,21 @@ async def handle_internal_a2a_push_get(request: Request):
 
         user_email, token_teams = _get_internal_a2a_scope_context(request)
         service = A2AAgentService()
-        if agent_id and not service._check_agent_access_by_id(db, agent_id, user_email, token_teams):  # pylint: disable=protected-access
-            return ORJSONResponse(status_code=404, content={"error": f"push config for task '{task_id}' not found"})
         cfg = service.get_push_config(db, task_id, agent_id=agent_id)
         if cfg is None:
             return ORJSONResponse(status_code=404, content={"error": f"push config for task '{task_id}' not found"})
+        if not service._check_agent_access_by_id(db, cfg["a2a_agent_id"], user_email, token_teams):  # pylint: disable=protected-access
+            return ORJSONResponse(status_code=404, content={"error": f"push config for task '{task_id}' not found"})
         return ORJSONResponse(status_code=200, content=cfg)
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9247,15 +9282,19 @@ async def handle_internal_a2a_push_list(request: Request):
 
         user_email, token_teams = _get_internal_a2a_scope_context(request)
         service = A2AAgentService()
-        if agent_id and not service._check_agent_access_by_id(db, agent_id, user_email, token_teams):  # pylint: disable=protected-access
-            return ORJSONResponse(status_code=200, content={"configs": []})
         configs = service.list_push_configs(db, agent_id=agent_id, task_id=task_id)
-        return ORJSONResponse(status_code=200, content={"configs": configs})
+        # Filter configs to only those whose owning agent is visible to the caller.
+        visible = [c for c in configs if service._check_agent_access_by_id(db, c["a2a_agent_id"], user_email, token_teams)]  # pylint: disable=protected-access
+        return ORJSONResponse(status_code=200, content={"configs": visible})
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9289,10 +9328,14 @@ async def handle_internal_a2a_push_delete(request: Request):
             return ORJSONResponse(status_code=404, content={"error": f"push config '{config_id}' not found"})
         return ORJSONResponse(status_code=200, content={"deleted": True})
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9313,16 +9356,32 @@ async def handle_internal_a2a_events_flush(request: Request):
             return ORJSONResponse(status_code=200, content={"count": 0})
 
         # First-Party
+        from mcpgateway.db import A2ATask as DbA2ATask  # pylint: disable=import-outside-toplevel
         from mcpgateway.services.a2a_service import A2AAgentService  # pylint: disable=import-outside-toplevel
 
+        user_email, token_teams = _get_internal_a2a_scope_context(request)
         service = A2AAgentService()
+
+        # Verify the caller has access to the agents that own the referenced tasks.
+        task_ids = {e["task_id"] for e in events if "task_id" in e}
+        if task_ids:
+            tasks = db.query(DbA2ATask).filter(DbA2ATask.task_id.in_(task_ids)).all()
+            agent_ids = {t.a2a_agent_id for t in tasks}
+            for agent_id in agent_ids:
+                if not service._check_agent_access_by_id(db, agent_id, user_email, token_teams):  # pylint: disable=protected-access
+                    return ORJSONResponse(status_code=403, content={"error": "access denied for one or more referenced tasks"})
+
         count = service.flush_events(db, events)
         return ORJSONResponse(status_code=200, content={"count": count})
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
@@ -9351,15 +9410,21 @@ async def handle_internal_a2a_events_replay(request: Request):
         user_email, token_teams = _get_internal_a2a_scope_context(request)
         service = A2AAgentService()
         task_row = db.query(DbA2ATask).filter(DbA2ATask.task_id == task_id).first()
-        if task_row and not service._check_agent_access_by_id(db, task_row.a2a_agent_id, user_email, token_teams):  # pylint: disable=protected-access
+        if task_row is None:
+            return ORJSONResponse(status_code=404, content={"error": "task not found"})
+        if not service._check_agent_access_by_id(db, task_row.a2a_agent_id, user_email, token_teams):  # pylint: disable=protected-access
             return ORJSONResponse(status_code=404, content={"error": "task not found"})
         events = service.replay_events(db, task_id, after_sequence, limit=limit)
         return ORJSONResponse(status_code=200, content={"events": events})
     except Exception:
+        logger.exception("Internal A2A endpoint error")
         try:
             db.rollback()
         except Exception:
-            pass
+            try:
+                db.invalidate()
+            except Exception:
+                pass  # nosec B110
         raise
     finally:
         db.close()
