@@ -8,19 +8,19 @@ This page tracks all significant design decisions made for ContextForge project,
 | 0002  | Use **Async SQLAlchemy** ORM with Connection Pooling | Accepted  | Persistence    | 2025-02-01  |
 | 0003  | Expose Multi-Transport Endpoints                   | Accepted  | Transport      | 2025-02-01  |
 | 0004  | Combine JWT & Basic Auth                           | Accepted  | Security       | 2025-02-01  |
-| 0005  | Structured JSON Logging                            | Accepted  | Observability  | 2025-02-21  |
+| 0005  | Structured JSON Logging                            | Implemented | Observability | 2025-02-21  |
 | 0005b | VS Code Dev Container Support                      | Accepted  | Development    | 2025-02-21  |
 | 0006  | Gateway & Tool-Level Rate Limiting                 | Accepted  | Performance    | 2025-02-21  |
 | 0007  | Pluggable Cache Backend (memory / Redis Cluster / DB) | Accepted  | Caching        | 2025-02-21  |
-| 0008  | Federation & Auto-Discovery via DNS-SD             | Accepted  | Federation     | 2025-02-21  |
+| 0008  | Federation & Auto-Discovery via DNS-SD             | Deprecated | Federation    | 2025-02-21  |
 | 0009  | Built-in Health Checks & Self-Monitoring           | Accepted  | Operations     | 2025-02-21  |
 | 0010  | Observability via Prometheus, Structured Logs      | Accepted  | Observability  | 2025-02-21  |
-| 0011  | Namespaced Tool Federation                         | Accepted  | Federation     | 2025-03-01  |
-| 0012  | Drop-down UI Tool Selection                        | Accepted  | User Interface | 2025-03-01  |
-| 0013  | APIs for Server Connection Strings                 | Accepted  | API Design     | 2025-03-01  |
+| 0011  | Namespaced Tool Federation                         | Implemented | Federation   | 2025-03-01  |
+| 0012  | Drop-down UI Tool Selection                        | Draft     | User Interface | 2025-03-01  |
+| 0013  | APIs for Server Connection Strings                 | Draft     | API Design     | 2025-03-01  |
 | 0014  | Security Headers & Environment-Aware CORS Middleware | Accepted  | Security       | 2025-08-17  |
 | 0015  | Configurable Well-Known URI Handler                | Accepted  | Security       | 2025-08-17  |
-| 0016  | Plugin Framework & AI Middleware                   | Accepted  | Extensibility  | 2025-08-17  |
+| 0016  | Plugin Framework & AI Middleware                   | Implemented | Extensibility | 2025-08-17  |
 | 0017  | Adopt **orjson** for High-Performance JSON         | Accepted  | Performance    | 2025-10-27  |
 | 0018  | Built-in Response Compression (Brotli/Zstd/GZip)   | Accepted  | Performance    | 2025-10-27  |
 | 0019  | Modular Architecture Split (14 Independent Modules) | Accepted  | Architecture   | 2025-10-27  |
@@ -40,10 +40,16 @@ This page tracks all significant design decisions made for ContextForge project,
 | 0033  | Tool Lookup Cache for invoke_tool | Accepted | Performance | 2025-01-20 |
 | 0035  | Query Parameter Authentication for Gateways | Accepted | Security | 2026-01-19 |
 | 0037  | External Plugin STDIO Launch with Command/Env Overrides | Accepted | Extensibility | 2026-01-28 |
-| 0038  | Experimental Rust Transport Backend (Streamable HTTP) | Proposed | Performance | 2025-12-26 |
+| 0038  | Experimental Rust Transport Backend (Streamable HTTP) | Superseded | Performance | 2025-12-26 |
 | 0039  | Adopt Fully Independent Plugin Crates Architecture | Accepted | Architecture | 2026-02-13 |
 | 0040  | Flexible Admin UI Section Visibility | Accepted | User Interface | 2026-02-16 |
 | 0041  | Top-Level Rust Workspace (Cargo.toml at Repository Root) | Accepted | Architecture | 2026-02-26 |
 | 0042  | Enforce Rust in the Build Process                    | Proposed | Build         | 2026-02-26 |
+| 0043  | Rust MCP Runtime Sidecar with Mode-Based Rollout     | Accepted | Architecture  | 2026-03-14 |
+| 0044  | Module Communication Protocol (gRPC over UDS)        | Proposed | Architecture  | 2026-03-15 |
+| 0045  | Authentication and Authorization Remain in Core      | Proposed | Security      | 2026-03-15 |
+| 0046  | Shared-Nothing Between Protocol Modules              | Proposed | Architecture  | 2026-03-15 |
+| 0047  | Incremental Migration Over Rewrite                   | Proposed | Architecture  | 2026-03-15 |
+| 0048  | Extract Rust-Backed Plugins First and Preserve Python Examples Separately | Accepted | Architecture | 2026-04-10 |
 
 > ✳️ Add new decisions chronologically and link to them from this table.

@@ -8,6 +8,7 @@ This middleware allows plugins to:
 
 # Standard
 import logging
+from typing import Optional
 
 # Third-Party
 from fastapi import Request
@@ -15,10 +16,95 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 # First-Party
-from mcpgateway.plugins.framework import GlobalContext, HttpHeaderPayload, HttpHookType, HttpPostRequestPayload, HttpPreRequestPayload, PluginManager
+from mcpgateway.config import settings
+from mcpgateway.plugins.framework import get_plugin_manager, GlobalContext, HttpHeaderPayload, HttpHookType, HttpPostRequestPayload, HttpPreRequestPayload, PluginManager
 from mcpgateway.utils.correlation_id import generate_correlation_id, get_correlation_id
 
 logger = logging.getLogger(__name__)
+
+
+async def run_pre_request_hooks(
+    plugin_manager: PluginManager,  # Base class type annotation is intentional - accepts both PluginManager and TenantPluginManager
+    headers: dict[str, str],
+    path: str,
+    method: str,
+    client_host: Optional[str] = None,
+    client_port: Optional[int] = None,
+    global_context: Optional[GlobalContext] = None,
+) -> tuple[dict[str, str], Optional[GlobalContext], Optional[dict]]:
+    """Run HTTP_PRE_REQUEST plugin hooks and return (possibly modified) headers.
+
+    This is the shared hook runner used by both HttpAuthMiddleware (Python flow)
+    and _run_internal_mcp_authentication (Rust flow) to ensure identical
+    plugin behavior regardless of transport.
+
+    Args:
+        plugin_manager: The plugin manager instance.
+        headers: Original request headers (not mutated).
+        path: Request path.
+        method: HTTP method.
+        client_host: Client IP address.
+        client_port: Client port.
+        global_context: Optional pre-created global context. Created if not provided.
+
+    Returns:
+        Tuple of (merged_headers, global_context, context_table).
+        merged_headers reflects any plugin modifications with the auth-header
+        override guard applied.
+    """
+    if not plugin_manager.has_hooks_for(HttpHookType.HTTP_PRE_REQUEST):
+        return headers, global_context, None
+
+    if global_context is None:
+        request_id = get_correlation_id() or generate_correlation_id()
+        content_type = headers.get("content-type") if headers else None
+        global_context = GlobalContext(request_id=request_id, server_id=None, tenant_id=None, content_type=content_type)
+
+    try:
+        pre_result, context_table = await plugin_manager.invoke_hook(
+            HttpHookType.HTTP_PRE_REQUEST,
+            payload=HttpPreRequestPayload(
+                path=path,
+                method=method,
+                headers=HttpHeaderPayload(root=dict(headers)),
+                client_host=client_host,
+                client_port=client_port,
+            ),
+            global_context=global_context,
+            local_contexts=None,
+            violations_as_exceptions=False,
+        )
+
+        if not pre_result.modified_payload:
+            return headers, global_context, context_table
+
+        modified_headers_dict = pre_result.modified_payload.root
+
+        # Security: prevent plugin hooks from overriding auth-sensitive
+        # headers that were already present on the inbound request.
+        # Plugins MAY create new auth headers (e.g. x-api-key → authorization
+        # transform) but MUST NOT replace values the client already sent.
+        #
+        # This guard can be disabled with PLUGINS_CAN_OVERRIDE_AUTH_HEADERS=true
+        # for deployments that require plugin-driven token exchange (e.g. WXO auth).
+        if not settings.plugins_can_override_auth_headers:
+            _auth_protected_headers = {"authorization", "cookie", "x-api-key", "proxy-authorization"}
+            original_lower = {h.lower() for h in headers}
+            overridden = {k.lower() for k in modified_headers_dict if k.lower() in _auth_protected_headers and k.lower() in original_lower}
+            if overridden:
+                logger.warning("Pre-request hook attempted to override existing auth headers (stripped): %s", overridden)
+                modified_headers_dict = {k: v for k, v in modified_headers_dict.items() if k.lower() not in overridden}
+
+        # Normalize to lowercase keys to avoid duplicate logical headers from
+        # casing differences (e.g. "Authorization" vs "authorization").
+        merged_headers = {k.lower(): v for k, v in headers.items()}
+        merged_headers.update({k.lower(): v for k, v in modified_headers_dict.items()})
+        logger.debug(f"Pre-request hook modified headers: {list(modified_headers_dict.keys())}")
+        return merged_headers, global_context, context_table
+
+    except Exception as e:
+        logger.warning(f"HTTP_PRE_REQUEST hook failed: {e}", exc_info=True)
+        return headers, global_context, None
 
 
 class HttpAuthMiddleware(BaseHTTPMiddleware):
@@ -36,15 +122,13 @@ class HttpAuthMiddleware(BaseHTTPMiddleware):
     - Log response status and headers
     """
 
-    def __init__(self, app: ASGIApp, plugin_manager: PluginManager | None = None):
+    def __init__(self, app: ASGIApp):
         """Initialize the HTTP auth middleware.
 
         Args:
             app: The ASGI application
-            plugin_manager: Optional plugin manager for hook invocation
         """
         super().__init__(app)
-        self.plugin_manager = plugin_manager
 
     async def dispatch(self, request: Request, call_next):
         """Process request through plugin hooks.
@@ -56,110 +140,78 @@ class HttpAuthMiddleware(BaseHTTPMiddleware):
         Returns:
             The response from the application
         """
-        # Skip hook invocation if no plugin manager
-        if not self.plugin_manager:
+        # Note: HTTP hooks always use global config (__global__ context) because
+        # this middleware runs before virtual server routing. Per-tenant HTTP hooks
+        # would require extracting server_id from the request path, which is not
+        # currently implemented. This is acceptable for auth-layer middleware.
+        plugin_manager = await get_plugin_manager()
+        if not plugin_manager:
+            logger.debug("HttpAuthMiddleware: no plugin_manager, skipping hooks")
             return await call_next(request)
+        logger.debug("HTTP authentication hooks enabled for plugins")
 
         # Skip payload creation if no HTTP hooks registered
-        has_pre = self.plugin_manager.has_hooks_for(HttpHookType.HTTP_PRE_REQUEST)
-        has_post = self.plugin_manager.has_hooks_for(HttpHookType.HTTP_POST_REQUEST)
+        has_pre = plugin_manager.has_hooks_for(HttpHookType.HTTP_PRE_REQUEST)
+        has_post = plugin_manager.has_hooks_for(HttpHookType.HTTP_POST_REQUEST)
 
         if not has_pre and not has_post:
+            logger.debug("HttpAuthMiddleware: has_pre=%s has_post=%s, skipping hooks", has_pre, has_post)
             return await call_next(request)
 
         # Use correlation ID from CorrelationIDMiddleware if available
-        # This ensures all hooks and downstream code see the same unified request ID
         request_id = get_correlation_id()
         if not request_id:
-            # Fallback if correlation ID middleware is disabled
             request_id = generate_correlation_id()
-            logger.debug(f"Correlation ID not found, generated fallback: {request_id}")
+            logger.debug("Correlation ID not found, generated fallback: %s", request_id)
 
         request.state.request_id = request_id
 
-        # Create global context for hooks
+        # Extract content type from request headers for plugin context
+        content_type = request.headers.get("content-type") if request and hasattr(request, "headers") else None
         global_context = GlobalContext(
             request_id=request_id,
-            server_id=None,  # Not specific to any server
-            tenant_id=None,  # Not specific to any tenant
+            server_id=None,
+            tenant_id=None,
+            content_type=content_type,
         )
 
-        # Extract client information
         client_host = None
         client_port = None
         if request.client:
             client_host = request.client.host
             client_port = request.client.port
 
-        # Initialize context_table for potential use by POST hook
         context_table = None
 
         # PRE-REQUEST HOOK: Allow plugins to transform headers before authentication
-        # Only create payload and invoke hook if plugins are registered for this hook type
         if has_pre:
-            try:
-                pre_result, context_table = await self.plugin_manager.invoke_hook(
-                    HttpHookType.HTTP_PRE_REQUEST,
-                    payload=HttpPreRequestPayload(
-                        path=str(request.url.path),
-                        method=request.method,
-                        headers=HttpHeaderPayload(root=dict(request.headers)),
-                        client_host=client_host,
-                        client_port=client_port,
-                    ),
-                    global_context=global_context,
-                    local_contexts=None,
-                    violations_as_exceptions=False,  # Don't block on pre-request violations
-                )
+            merged_headers, global_context, context_table = await run_pre_request_hooks(
+                plugin_manager=plugin_manager,
+                headers=dict(request.headers),
+                path=str(request.url.path),
+                method=request.method,
+                client_host=client_host,
+                client_port=client_port,
+                global_context=global_context,
+            )
 
-                if context_table:
-                    request.state.plugin_context_table = context_table
+            if context_table:
+                request.state.plugin_context_table = context_table
+            if global_context:
+                request.state.plugin_global_context = global_context
 
-                if global_context:
-                    request.state.plugin_global_context = global_context
-
-                # Apply modified headers if plugin returned them
-                if pre_result.modified_payload:
-                    # Modify request headers by updating request.scope["headers"]
-                    # This is the proper way to modify headers in Starlette/FastAPI
-                    # Reference: https://stackoverflow.com/questions/69934160/python-how-to-manipulate-fastapi-request-headers-to-be-mutable
-                    modified_headers_dict = pre_result.modified_payload.root
-
-                    # Security: prevent plugin hooks from overriding auth-sensitive
-                    # headers that were already present on the inbound request.
-                    # Plugins MAY create new auth headers (e.g. x-api-key → authorization
-                    # transform) but MUST NOT replace values the client already sent.
-                    original_headers = dict(request.headers)
-                    _auth_protected_headers = {"authorization", "cookie", "x-api-key", "proxy-authorization"}
-                    overridden = {k for k in modified_headers_dict if k.lower() in _auth_protected_headers and k.lower() in original_headers}
-                    if overridden:
-                        logger.warning("Pre-request hook attempted to override existing auth headers (stripped): %s", overridden)
-                        modified_headers_dict = {k: v for k, v in modified_headers_dict.items() if k.lower() not in overridden}
-
-                    # Merge modified headers with original headers (modified headers take precedence)
-                    merged_headers = {**original_headers, **modified_headers_dict}
-
-                    # Update request.scope["headers"] which is the raw header list Starlette uses
-                    # Convert dict to list of (name, value) tuples with lowercase byte keys
-                    request.scope["headers"] = [(name.lower().encode(), value.encode()) for name, value in merged_headers.items()]
-
-                    logger.debug(f"Pre-request hook modified headers: {list(modified_headers_dict.keys())}")
-
-            except Exception as e:
-                # Log but don't fail the request if pre-hook has issues
-                logger.warning(f"HTTP_PRE_REQUEST hook failed: {e}", exc_info=True)
+            # Apply modified headers to the request scope
+            request.scope["headers"] = [(name.lower().encode(), value.encode()) for name, value in merged_headers.items()]
 
         # Process the request through the rest of the application
         response = await call_next(request)
 
         # POST-REQUEST HOOK: Allow plugins to inspect and modify response
-        # Only create payload and invoke hook if plugins are registered for this hook type
         if has_post:
             try:
-                # Extract response headers
                 response_headers = HttpHeaderPayload(root=dict(response.headers))
 
-                post_result, _ = await self.plugin_manager.invoke_hook(
+                post_result, _ = await plugin_manager.invoke_hook(
                     HttpHookType.HTTP_POST_REQUEST,
                     payload=HttpPostRequestPayload(
                         path=str(request.url.path),
@@ -171,20 +223,17 @@ class HttpAuthMiddleware(BaseHTTPMiddleware):
                         status_code=response.status_code,
                     ),
                     global_context=global_context,
-                    local_contexts=context_table,  # Pass context from pre-hook
-                    violations_as_exceptions=False,  # Don't block on post-request violations
+                    local_contexts=context_table,
+                    violations_as_exceptions=False,
                 )
 
-                # Apply modified response headers if plugin returned them
                 if post_result.modified_payload:
                     modified_response_headers = post_result.modified_payload.root
-                    # Update response headers (response.headers is mutable)
                     for header_name, header_value in modified_response_headers.items():
                         response.headers[header_name] = header_value
-                    logger.debug(f"Post-request hook modified response headers: {list(modified_response_headers.keys())}")
+                    logger.debug("Post-request hook modified response headers: %s", list(modified_response_headers.keys()))
 
             except Exception as e:
-                # Log but don't fail the response if post-hook has issues
                 logger.warning(f"HTTP_POST_REQUEST hook failed: {e}", exc_info=True)
 
         return response
