@@ -301,6 +301,103 @@ class ContentSecurityService:
             },
         )
 
+    def _regex_search_with_timeout(self, pattern: str, content: str, timeout: float = 1.0):
+        """Execute regex search with timeout protection for Python < 3.13.
+
+        Uses threading to implement timeout for regex operations that don't
+        natively support it. This prevents ReDoS attacks on Python 3.11/3.12.
+
+        Args:
+            pattern: Regex pattern to search for
+            content: Content to search in
+            timeout: Maximum time in seconds to allow for regex execution
+
+        Returns:
+            Match object if pattern found, None otherwise
+
+        Raises:
+            TimeoutError: If regex execution exceeds timeout
+        """
+        result = [None]
+        exception = [None]
+
+        def search_thread():
+            try:
+                result[0] = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=search_thread, daemon=True)
+        thread.start()
+        thread.join(timeout)
+
+        if thread.is_alive():
+            # Thread is still running - timeout exceeded
+            logger.warning(
+                "Regex search timeout exceeded",
+                extra={
+                    "pattern_length": len(pattern),
+                    "content_length": len(content),
+                    "timeout": timeout,
+                },
+            )
+            raise TimeoutError(f"Regex search exceeded {timeout}s timeout - possible ReDoS attack")
+
+        if exception[0]:
+            raise exception[0]
+
+        return result[0]
+
+    def _normalize_input(self, content: str) -> str:
+        """Normalize input to prevent encoding bypass attacks (CWE-116).
+
+        Applies multiple normalization techniques to catch obfuscated malicious patterns:
+        - HTML entity decoding (&#60;script -> <script)
+        - URL percent decoding (%3Cscript -> <script)
+        - Null byte removal (<scr\x00ipt -> <script)
+        - Unicode normalization (NFKC form)
+
+        Args:
+            content: Raw input content to normalize
+
+        Returns:
+            Normalized content string
+
+        Examples:
+            >>> service = ContentSecurityService()
+            >>> service._normalize_input("&#60;script&#62;")
+            '<script>'
+            >>> service._normalize_input("%3Cscript%3E")
+            '<script>'
+        """
+        # Standard
+        import html
+        import unicodedata
+        from urllib.parse import unquote
+
+        # Remove null bytes
+        normalized = content.replace("\x00", "")
+
+        # HTML entity decoding (&#60; -> <, &lt; -> <)
+        normalized = html.unescape(normalized)
+
+        # URL percent decoding (%3C -> <)
+        try:
+            normalized = unquote(normalized)
+        except Exception:
+            # If URL decoding fails, continue with original
+            pass
+
+        # Unicode normalization (NFKC - compatibility decomposition + canonical composition)
+        # This catches various Unicode tricks like fullwidth characters
+        try:
+            normalized = unicodedata.normalize("NFKC", normalized)
+        except Exception:
+            # If normalization fails, continue with what we have
+            pass
+
+        return normalized
+
     def validate_resource_size(self, content: Union[str, bytes], uri: Optional[str] = None, user_email: Optional[str] = None, ip_address: Optional[str] = None) -> None:
         """Validate resource content size.
 
@@ -505,6 +602,13 @@ class ContentSecurityService:
         blocked_patterns = settings.content_blocked_patterns
         validation_mode = settings.content_pattern_validation_mode
 
+        # Normalize input to prevent encoding bypasses (CWE-116 fix)
+        # - HTML entity decoding: &#60;script -> <script
+        # - URL decoding: %3Cscript -> <script
+        # - Null byte removal: <scr\x00ipt -> <script
+        # - Unicode normalization: various Unicode tricks
+        normalized_content = self._normalize_input(content)
+
         for pattern in blocked_patterns:
             try:
                 # Use re.search with timeout to prevent ReDoS (CWE-400 fix)
@@ -513,11 +617,10 @@ class ContentSecurityService:
                 import sys
 
                 if sys.version_info >= (3, 13):
-                    match = re.search(pattern, content, re.IGNORECASE | re.DOTALL, timeout=1.0)  # pylint: disable=unexpected-keyword-arg
+                    match = re.search(pattern, normalized_content, re.IGNORECASE | re.DOTALL, timeout=1.0)  # pylint: disable=unexpected-keyword-arg
                 else:
-                    # Fallback for Python < 3.13 - no timeout protection
-                    # ReDoS mitigation relies on pattern complexity validation in config.py
-                    match = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
+                    # Fallback for Python < 3.13 - manual timeout using threading
+                    match = self._regex_search_with_timeout(pattern, normalized_content, timeout=1.0)
 
                 if match:
                     # Determine violation type from pattern
