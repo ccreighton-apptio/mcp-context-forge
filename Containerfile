@@ -23,6 +23,9 @@ RUN npm run vite:build
 # Use official Red Hat UBI10 Node.js 24 image
 FROM registry.access.redhat.com/ubi10/nodejs-24:10.1-1771303073 AS node-builder
 
+USER root
+RUN mkdir -p /build && chown 1001:0 /build && chmod g=u /build
+USER 1001
 WORKDIR /build
 
 # Copy only files needed for CSS build (with proper ownership for non-root user)
