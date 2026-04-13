@@ -1686,9 +1686,10 @@ class Settings(BaseSettings):
             r"(?i)(union|select|insert|update|delete|drop)\s+",  # SQL keywords
             r"--\s*$",  # SQL comments
             r"'\s*or\s*'1'\s*=\s*'1",  # Classic SQL injection
-            # Template injection
-            r"\{\{.*config.*\}\}",  # Jinja2 config access
-            r"\{%.*for.*%\}",  # Jinja2 loops
+            # Template injection - more specific patterns to avoid false positives
+            r"\{\{\s*config\s*\}\}",  # Direct Jinja2 config object access (not variables containing "config")
+            r"\{\{\s*config\.",  # Jinja2 config attribute access
+            r"\{%\s*for\s+\w+\s+in\s+config",  # Jinja2 loops over config object
             r"\$\{.*\}",  # Expression evaluation
         ],
         description="Regex patterns for malicious content detection (US-3). Blocks XSS, command injection, SQL injection, and template injection attempts.",

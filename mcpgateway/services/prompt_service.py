@@ -962,7 +962,9 @@ class PromptService(BaseService):
             raise tve
         except ContentPatternError as cpe:
             db.rollback()
-            logger.error(f"Malicious pattern detected in prompt template: {cpe.pattern_matched}")
+            # Sanitize pattern_matched to prevent log injection (CWE-117)
+            sanitized_pattern = cpe.pattern_matched.replace('\n', '\\n').replace('\r', '\\r')
+            logger.error(f"Malicious pattern detected in prompt template: {sanitized_pattern}")
             structured_logger.log(
                 level="ERROR",
                 message="Prompt creation failed - Malicious pattern detected",
@@ -2506,7 +2508,9 @@ class PromptService(BaseService):
             raise tve
         except ContentPatternError as cpe:
             db.rollback()
-            logger.error(f"Malicious pattern detected in prompt template: {cpe.pattern_matched}")
+            # Sanitize pattern_matched to prevent log injection (CWE-117)
+            sanitized_pattern = cpe.pattern_matched.replace('\n', '\\n').replace('\r', '\\r')
+            logger.error(f"Malicious pattern detected in prompt template: {sanitized_pattern}")
             structured_logger.log(
                 level="ERROR",
                 message="Prompt update failed - Malicious pattern detected",

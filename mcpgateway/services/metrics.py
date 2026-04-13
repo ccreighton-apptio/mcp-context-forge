@@ -118,6 +118,13 @@ mcp_auth_cache_events_counter = Counter(
     ["outcome"],
 )
 
+# OAuth Verification Metrics
+oauth_verify_events_counter = Counter(
+    "oauth_verify_events_total",
+    "Total number of OAuth token verification events by outcome",
+    ["outcome"],  # success, failed, error, not_applicable
+)
+
 
 def setup_metrics(app):
     """
