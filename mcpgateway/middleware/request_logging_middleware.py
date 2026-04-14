@@ -300,7 +300,7 @@ def _mask_json_payload_for_logging(payload: bytes, max_depth: int = 10) -> str:
                     return masked_payload.decode("utf-8", errors="ignore")
                 return str(masked_payload)
             except Exception:
-                pass
+                logger.debug("Falling back to Python JSON masking after Rust masking failure", exc_info=True)
 
     json_payload = orjson.loads(payload)
     payload_to_log = mask_sensitive_data(json_payload, max_depth)

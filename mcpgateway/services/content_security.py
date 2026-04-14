@@ -385,16 +385,16 @@ class ContentSecurityService:
         try:
             normalized = unquote(normalized)
         except Exception:
-            # If URL decoding fails, continue with original
-            pass
+            # If URL decoding fails, continue with the current normalized value
+            normalized = normalized
 
         # Unicode normalization (NFKC - compatibility decomposition + canonical composition)
         # This catches various Unicode tricks like fullwidth characters
         try:
             normalized = unicodedata.normalize("NFKC", normalized)
         except Exception:
-            # If normalization fails, continue with what we have
-            pass
+            # If normalization fails, continue with the current normalized value
+            normalized = normalized
 
         return normalized
 
