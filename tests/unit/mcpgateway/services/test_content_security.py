@@ -49,6 +49,79 @@ class TestFormatBytes:
         """Test formatting gigabytes."""
         assert _format_bytes(1073741824) == "1.0 GB"
         assert _format_bytes(2147483648) == "2.0 GB"
+
+
+class TestNormalizeInput:
+    """Test the _normalize_input method exception handling."""
+
+    def test_normalize_input_url_decode_exception(self):
+        """Test _normalize_input handles URL decode exceptions gracefully."""
+        service = ContentSecurityService()
+        # Invalid percent encoding that will fail unquote
+        content = "test%ZZinvalid"
+        # Should not raise, just continue with original
+        result = service._normalize_input(content)
+        assert "test" in result
+
+    def test_normalize_input_url_decode_exception(self):
+        """Test _normalize_input handles URL decode exceptions gracefully."""
+        service = ContentSecurityService()
+
+        with patch("urllib.parse.unquote", side_effect=Exception("URL decode error")):
+            content = "test%3Ccontent"
+            result = service._normalize_input(content)
+
+        assert result == "test%3Ccontent"
+
+    def test_normalize_input_unicode_normalize_exception(self):
+        """Test _normalize_input handles Unicode normalization exceptions gracefully."""
+        service = ContentSecurityService()
+
+        with patch("unicodedata.normalize", side_effect=Exception("Unicode error")):
+            content = "test content"
+            result = service._normalize_input(content)
+
+        assert result == "test content"
+
+
+class TestRegexSearchWithTimeout:
+    """Test the _regex_search_with_timeout method exception handling."""
+
+    def test_regex_search_with_timeout_timeout(self):
+        """Test _regex_search_with_timeout raises TimeoutError on timeout (line 336)."""
+        service = ContentSecurityService()
+        # Mock thread.is_alive() to return True to simulate timeout
+        import threading
+        original_thread = threading.Thread
+        
+        class MockThread:
+            def __init__(self, *args, **kwargs):
+                self._thread = original_thread(*args, **kwargs)
+            def start(self):
+                self._thread.start()
+            def join(self, timeout=None):
+                self._thread.join(timeout)
+            def is_alive(self):
+                return True  # Always return True to simulate timeout
+        
+        with patch('threading.Thread', MockThread):
+            with pytest.raises(TimeoutError, match="possible ReDoS attack"):
+                service._regex_search_with_timeout(r"test", "test content", timeout=0.1)
+
+    def test_regex_search_with_timeout_exception_in_thread(self):
+        """Test _regex_search_with_timeout propagates exceptions from search thread (line 344)."""
+        service = ContentSecurityService()
+        # Use invalid regex pattern to trigger exception in thread
+        pattern = r"(?P<invalid"  # Unclosed group - will raise re.error
+        content = "test"
+        
+        with pytest.raises(Exception):
+            service._regex_search_with_timeout(pattern, content, timeout=1.0)
+
+
+            assert "test" in result
+
+
         assert _format_bytes(1610612736) == "1.5 GB"
 
     def test_format_bytes_zero(self):
