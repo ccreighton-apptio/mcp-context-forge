@@ -343,8 +343,9 @@ class ContentSecurityService:
             )
             raise TimeoutError(f"Regex search exceeded {timeout}s timeout - possible ReDoS attack")
 
-        if exception[0]:
-            raise exception[0]
+        captured_exception = exception[0]
+        if captured_exception is not None:
+            raise captured_exception
 
         return result[0]
 
