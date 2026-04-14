@@ -686,6 +686,43 @@ def test_content_type_exception_handler():
 
 
 
+
+def test_content_pattern_exception_handler():
+    """Test ContentPatternError exception handler returns 400 with proper format."""
+    # First-Party
+    from mcpgateway.main import content_pattern_error_handler
+    from mcpgateway.services.content_security import ContentPatternError
+    from starlette.requests import Request
+
+    # Create a mock request
+    mock_request = MagicMock(spec=Request)
+
+    # Test with violation_type=None to trigger the "or 'unknown'" fallback (line 2374)
+    exc = ContentPatternError(
+        pattern_matched="<script>",
+        content_type="test content",
+        violation_type=None
+    )
+
+    # Call the exception handler
+    import asyncio
+    response = asyncio.run(content_pattern_error_handler(mock_request, exc))
+
+    # Verify response
+    assert response.status_code == 400
+    content = response.body.decode()
+    import json
+    result = json.loads(content)
+    assert "detail" in result
+    assert result["detail"]["error"] == "Malicious pattern detected"
+    assert result["detail"]["violation_type"] == "unknown"  # Should use fallback
+    assert result["detail"]["content_type"] == "test content"
+
+
+
+
+
+
 def test_template_validation_exception_handler():
     """Test TemplateValidationError exception handler returns 400 with proper format."""
     # First-Party
