@@ -89,9 +89,17 @@
         msg: "PostgresCluster: {{ 'already running' if pg_pods.resources | length > 0 else 'CR applied, waiting for pods...' }}"
 
     # Step 4: Wait for Postgres master pod
-    - name: Waiting for PGO to create Postgres pods (30s)
-      ansible.builtin.pause:
-        seconds: 30
+    - name: Wait for Postgres master pod to exist
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ ocp_namespace }}"
+        label_selectors:
+          - "postgres-operator.crunchydata.com/role=master"
+      register: master_pod_exists
+      until: master_pod_exists.resources | length > 0
+      retries: 30
+      delay: 10
       when: pg_pods.resources | length == 0
 
     - name: Wait for Postgres master pod to be Ready

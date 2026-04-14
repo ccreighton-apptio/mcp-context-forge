@@ -25,6 +25,9 @@ pg_database: postgresdb
 pg_admin_user: admin
 pg_secret_name: "{{ pg_cluster_name }}-pguser-{{ pg_admin_user }}"
 
+# PGO operator settings
+pgo_channel: v5
+
 # Locust worker settings
 locust_workers: 3
 locust_worker_wait_timeout: 90

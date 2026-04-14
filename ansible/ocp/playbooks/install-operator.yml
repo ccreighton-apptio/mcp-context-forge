@@ -36,17 +36,16 @@
       when: not (skip_confirm | default(false) | bool)
 
     - name: Verify cluster-admin access
-      kubernetes.core.k8s_info:
-        api_version: operators.coreos.com/v1alpha1
-        kind: Subscription
-        namespace: openshift-operators
+      ansible.builtin.command:
+        cmd: oc auth can-i create subscriptions -n openshift-operators
       register: sub_check
+      changed_when: false
       failed_when: false
 
     - name: Fail if insufficient permissions
       ansible.builtin.fail:
-        msg: "This command requires cluster-admin access. Current user cannot manage operators in openshift-operators."
-      when: sub_check.msg is defined and 'Forbidden' in (sub_check.msg | default(''))
+        msg: "This command requires cluster-admin access. Current user cannot create Subscriptions in openshift-operators."
+      when: sub_check.stdout | default('') != 'yes'
 
     - name: Check if PGO operator is already installed
       kubernetes.core.k8s_info:
@@ -69,19 +68,25 @@
             name: crunchy-postgres-operator
             namespace: openshift-operators
           spec:
-            channel: v5
+            channel: "{{ pgo_channel }}"
             name: crunchy-postgres-operator
             source: certified-operators
             sourceNamespace: openshift-marketplace
             installPlanApproval: Automatic
       when: pgo_crd.resources | length == 0
 
-    - name: Waiting for operator install (60s)
-      ansible.builtin.pause:
-        seconds: 60
+    - name: Wait for PGO CRD to exist
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: postgresclusters.postgres-operator.crunchydata.com
+      register: pgo_crd_wait
+      until: pgo_crd_wait.resources | length > 0
+      retries: 30
+      delay: 10
       when: pgo_crd.resources | length == 0
 
-    - name: Wait for PGO CRD to be available
+    - name: Wait for PGO CRD to be established
       ansible.builtin.command:
         cmd: oc wait crd postgresclusters.postgres-operator.crunchydata.com --for=condition=Established --timeout=300s
       changed_when: false
