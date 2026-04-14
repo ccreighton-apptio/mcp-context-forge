@@ -7922,16 +7922,6 @@ async fn send_sampling_create_message_to_backend(
         "Backend MCP sampling/createMessage dispatch failed",
     ).await
 }
-                    "id": Value::Null,
-                    "error": {
-                        "code": -32000,
-                        "message": "Backend MCP sampling/createMessage dispatch failed",
-                        "data": CLIENT_ERROR_DETAIL,
-                    }
-                }),
-            )
-        })
-}
 
 async fn send_logging_set_level_to_backend(
     state: &AppState,
@@ -7973,17 +7963,6 @@ async fn send_prompts_get_to_backend(
         body,
         "Backend MCP prompts/get dispatch failed",
     ).await
-}
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": Value::Null,
-                    "error": {
-                        "code": -32000,
-                        "message": "Backend MCP prompts/get dispatch failed",
-                        "data": CLIENT_ERROR_DETAIL,
-                    }
-                }),
-            )
-        })
 }
 
 async fn handle_tools_call(
