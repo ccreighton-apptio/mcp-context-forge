@@ -13,6 +13,7 @@ rmcp-upstream-client = ["dep:rmcp", "dep:reqwest-rmcp"]
 
 [dependencies]
 async-stream = "0.3.6"
+async-trait = "0.1.86"
 axum = "0.8.8"
 base64 = "0.22.1"
 clap = { version = "4.5.60", features = ["derive", "env"] }
@@ -48,4 +49,5 @@ uuid = { version = "1.18.1", features = ["v4"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "stream", "http2", "rustls-tls-native-roots"] }
+serial_test = "3.2.0"
 tokio = { version = "1.50.0", features = ["full"] }
