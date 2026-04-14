@@ -817,10 +817,9 @@ impl AppState {
             session_auth_reuse_ttl: Duration::from_secs(config.session_auth_reuse_ttl_seconds),
             public_ingress_enabled: config.public_listen_http.is_some(),
             runtime_stats: Arc::new(RuntimeStats::default()),
-            url_validator: Arc::new(
-                url_validator::UrlValidator::from_config(config)
-                    .map_err(|e| RuntimeError::Config(format!("URL validator initialization failed: {}", e)))?,
-            ),
+            url_validator: Arc::new(url_validator::UrlValidator::from_config(config).map_err(
+                |e| RuntimeError::Config(format!("URL validator initialization failed: {}", e)),
+            )?),
         })
     }
 
@@ -2563,9 +2562,16 @@ async fn authenticate_public_request_if_needed(
 
     // 🔒 SSRF PROTECTION: Validate URL before request
     let backend_url = state.backend_authenticate_url();
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
-        return Err(backend_detail_error_response(&format!("Invalid backend URL: {}", e)));
+        return Err(backend_detail_error_response(&format!(
+            "Invalid backend URL: {}",
+            e
+        )));
     }
 
     let backend_response = state
@@ -4435,7 +4441,11 @@ async fn send_to_backend_url(
     body: Bytes,
 ) -> Result<reqwest::Response, Response> {
     // 🔒 SSRF PROTECTION: Validate URL before request
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
         return Err(json_response(
             StatusCode::BAD_REQUEST,
@@ -4479,7 +4489,11 @@ async fn validated_backend_post(
     error_message: &str,
 ) -> Result<reqwest::Response, Response> {
     // 🔒 SSRF PROTECTION: Validate URL before request
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
         return Err(json_response(
             StatusCode::BAD_REQUEST,
@@ -7693,7 +7707,11 @@ async fn send_transport_to_backend(
     let target_url = build_backend_transport_url(state.backend_transport_url(), uri);
 
     // 🔒 SSRF PROTECTION: Validate URL before request
-    if let Err(e) = state.url_validator.validate_url(&target_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(&target_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", target_url, e);
         return Err(json_response(
             StatusCode::BAD_REQUEST,
@@ -7731,7 +7749,11 @@ async fn send_session_delete_to_backend(
 ) -> Result<reqwest::Response, Response> {
     // 🔒 SSRF PROTECTION: Validate URL before request
     let backend_url = derive_backend_session_delete_url(state.backend_rpc_url());
-    if let Err(e) = state.url_validator.validate_url(&backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(&backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
         return Err(json_response(
             StatusCode::BAD_REQUEST,
@@ -7773,7 +7795,11 @@ async fn send_tools_list_to_backend(
 
     // 🔒 SSRF PROTECTION: Validate URL before request
     let backend_url = state.backend_tools_list_url();
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
         return Err(json_response(
             StatusCode::BAD_REQUEST,
@@ -7822,7 +7848,8 @@ async fn send_resources_list_to_backend(
         incoming_headers,
         body,
         "Backend MCP resources/list dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_resources_read_to_backend(
@@ -7836,7 +7863,8 @@ async fn send_resources_read_to_backend(
         incoming_headers,
         body,
         "Backend MCP resources/read dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_resources_subscribe_to_backend(
@@ -7850,7 +7878,8 @@ async fn send_resources_subscribe_to_backend(
         incoming_headers,
         body,
         "Backend MCP resources/subscribe dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_resources_unsubscribe_to_backend(
@@ -7864,7 +7893,8 @@ async fn send_resources_unsubscribe_to_backend(
         incoming_headers,
         body,
         "Backend MCP resources/unsubscribe dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_resource_templates_list_to_backend(
@@ -7878,7 +7908,8 @@ async fn send_resource_templates_list_to_backend(
         incoming_headers,
         body,
         "Backend MCP resources/templates/list dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_roots_list_to_backend(
@@ -7892,7 +7923,8 @@ async fn send_roots_list_to_backend(
         incoming_headers,
         body,
         "Backend MCP roots/list dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_completion_complete_to_backend(
@@ -7906,7 +7938,8 @@ async fn send_completion_complete_to_backend(
         incoming_headers,
         body,
         "Backend MCP completion/complete dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_sampling_create_message_to_backend(
@@ -7920,7 +7953,8 @@ async fn send_sampling_create_message_to_backend(
         incoming_headers,
         body,
         "Backend MCP sampling/createMessage dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_logging_set_level_to_backend(
@@ -7934,7 +7968,8 @@ async fn send_logging_set_level_to_backend(
         incoming_headers,
         body,
         "Backend MCP logging/setLevel dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_prompts_list_to_backend(
@@ -7948,7 +7983,8 @@ async fn send_prompts_list_to_backend(
         incoming_headers,
         body,
         "Backend MCP prompts/list dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_prompts_get_to_backend(
@@ -7962,7 +7998,8 @@ async fn send_prompts_get_to_backend(
         incoming_headers,
         body,
         "Backend MCP prompts/get dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn handle_tools_call(
@@ -8136,9 +8173,16 @@ async fn resolve_tools_call_plan_via_backend(
 ) -> Result<ResolvedMcpToolCallPlan, ResolveToolsCallError> {
     // 🔒 SSRF PROTECTION: Validate URL before request
     let backend_url = state.backend_tools_call_resolve_url();
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
-        return Err(ResolveToolsCallError::Fallback(format!("Invalid backend URL: {}", e)));
+        return Err(ResolveToolsCallError::Fallback(format!(
+            "Invalid backend URL: {}",
+            e
+        )));
     }
 
     let response = state
@@ -8234,7 +8278,8 @@ async fn send_tools_call_to_backend(
         incoming_headers,
         body,
         "Backend MCP tools/call dispatch failed",
-    ).await
+    )
+    .await
 }
 
 async fn send_tools_call_metric_to_backend(
@@ -8244,7 +8289,11 @@ async fn send_tools_call_metric_to_backend(
 ) -> Result<(), String> {
     // 🔒 SSRF PROTECTION: Validate URL before request
     let backend_url = state.backend_tools_call_metric_url();
-    if let Err(e) = state.url_validator.validate_url(backend_url, "Backend URL").await {
+    if let Err(e) = state
+        .url_validator
+        .validate_url(backend_url, "Backend URL")
+        .await
+    {
         error!("SSRF protection blocked request to {}: {}", backend_url, e);
         return Err(format!("Invalid backend URL: {}", e));
     }
@@ -13300,10 +13349,7 @@ mod unit_tests {
             .body(Body::from(large_body))
             .expect("request");
 
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("response");
+        let response = app.oneshot(request).await.expect("response");
 
         // Should reject with 413 Payload Too Large
         assert_eq!(
