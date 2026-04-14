@@ -383,19 +383,23 @@ class ContentSecurityService:
         normalized = html.unescape(normalized)
 
         # URL percent decoding (%3C -> <)
+        url_decoded = normalized
         try:
-            normalized = unquote(normalized)
+            url_decoded = unquote(normalized)
         except Exception:
-            # If URL decoding fails, continue with the current normalized value
-            normalized = normalized
+            # If URL decoding fails, continue with the pre-decoded value
+            logger.debug("URL decoding failed during content normalization", exc_info=True)
+        normalized = url_decoded
 
         # Unicode normalization (NFKC - compatibility decomposition + canonical composition)
         # This catches various Unicode tricks like fullwidth characters
+        unicode_normalized = normalized
         try:
-            normalized = unicodedata.normalize("NFKC", normalized)
+            unicode_normalized = unicodedata.normalize("NFKC", normalized)
         except Exception:
-            # If normalization fails, continue with the current normalized value
-            normalized = normalized
+            # If normalization fails, continue with the pre-normalized value
+            logger.debug("Unicode normalization failed during content normalization", exc_info=True)
+        normalized = unicode_normalized
 
         return normalized
 
