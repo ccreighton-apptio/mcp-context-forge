@@ -55,23 +55,27 @@
         msg: "Helm install: deployed"
 
     - name: Wait for gateway pods to be Ready
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ ocp_namespace }}"
-        label_selectors:
-          - "app={{ ocp_namespace }}-mcp-stack-mcpgateway"
-        field_selectors:
-          - "status.phase=Running"
-      register: gw_pods
-      until: gw_pods.resources | length >= 1
-      retries: 30
-      delay: 10
+      ansible.builtin.command:
+        cmd: >
+          oc wait pod -n {{ ocp_namespace }}
+          -l app={{ ocp_namespace }}-mcp-stack-mcpgateway
+          --for=condition=Ready
+          --timeout=300s
+      changed_when: false
+
+    - name: Get gateway pod name
+      ansible.builtin.command:
+        cmd: >
+          oc get pod -n {{ ocp_namespace }}
+          -l app={{ ocp_namespace }}-mcp-stack-mcpgateway
+          -o jsonpath='{.items[0].metadata.name}'
+      register: gw_pod_name
+      changed_when: false
 
     - name: Check gateway health
       kubernetes.core.k8s_exec:
         namespace: "{{ ocp_namespace }}"
-        pod: "{{ gw_pods.resources[0].metadata.name }}"
+        pod: "{{ gw_pod_name.stdout }}"
         command: "curl -s http://localhost:4444/health"
       register: health_check
 

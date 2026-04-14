@@ -98,6 +98,9 @@ recursive-include plugins *.txt
 recursive-include plugins *.yaml
 recursive-include plugins *.md
 
+# Ansible playbooks (OCP deployment)
+recursive-include ansible *.md
+recursive-include ansible *.yml
 
 # 5️⃣  (Optional) include MKDocs-based docs in the sdist
 # graft docs

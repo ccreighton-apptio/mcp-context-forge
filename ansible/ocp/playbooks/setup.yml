@@ -89,29 +89,38 @@
         msg: "PostgresCluster: {{ 'already running' if pg_pods.resources | length > 0 else 'CR applied, waiting for pods...' }}"
 
     # Step 4: Wait for Postgres master pod
+    - name: Waiting for PGO to create Postgres pods (30s)
+      ansible.builtin.pause:
+        seconds: 30
+      when: pg_pods.resources | length == 0
+
     - name: Wait for Postgres master pod to be Ready
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ ocp_namespace }}"
-        label_selectors:
-          - "postgres-operator.crunchydata.com/role=master"
-        field_selectors:
-          - "status.phase=Running"
-      register: master_pod
-      until: master_pod.resources | length > 0
-      retries: 30
-      delay: 10
+      ansible.builtin.command:
+        cmd: >
+          oc wait pod -n {{ ocp_namespace }}
+          -l postgres-operator.crunchydata.com/role=master
+          --for=condition=Ready
+          --timeout=270s
+      changed_when: false
+
+    - name: Get Postgres master pod name
+      ansible.builtin.command:
+        cmd: >
+          oc get pod -n {{ ocp_namespace }}
+          -l postgres-operator.crunchydata.com/role=master
+          -o jsonpath='{.items[0].metadata.name}'
+      register: master_pod_name
+      changed_when: false
 
     - name: Report Postgres master pod
       ansible.builtin.debug:
-        msg: "Postgres master pod: {{ master_pod.resources[0].metadata.name }}"
+        msg: "Postgres master pod: {{ master_pod_name.stdout }}"
 
     # Step 5: Grant schema privileges
     - name: Grant CREATE, USAGE on public schema to admin user
       kubernetes.core.k8s_exec:
         namespace: "{{ ocp_namespace }}"
-        pod: "{{ master_pod.resources[0].metadata.name }}"
+        pod: "{{ master_pod_name.stdout }}"
         container: database
         command: >
           psql -U postgres -d {{ pg_database }}

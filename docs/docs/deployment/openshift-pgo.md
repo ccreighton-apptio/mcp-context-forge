@@ -75,20 +75,37 @@ If you don't need HA or automated backups (dev/test, POCs, teams without cluster
 
 ---
 
-## Quick Start
+## Prerequisites
 
-If you have the PGO operator already installed on your cluster, you can deploy and benchmark with a few commands. Storage is handled automatically via the `nfs-client` dynamic provisioner — no manual PV creation needed.
+- **`oc` CLI** with cluster access (developer or admin)
+- **Helm** CLI installed locally
+- **Ansible** installed locally:
+  ```bash
+  pip install ansible
+  ansible-galaxy collection install kubernetes.core
+  ```
 
-The Make commands below wrap Ansible playbooks under the hood (`ansible/ocp/playbooks/`). You can also run the playbooks directly — see [ansible/ocp/README.md](../../../ansible/ocp/README.md) for details.
+---
 
-**Prerequisites:**
+## One-time cluster setup
 
-```bash
-pip install ansible
-ansible-galaxy collection install kubernetes.core
-```
+These steps are performed once per cluster, not per deployment.
 
-**1. Create a secrets file** at `charts/mcp-stack/profiles/ocp/values-pgo-secrets.yaml` (gitignored):
+- **Cluster sizing** — use **OCP Large** on Fyre (or equivalent: 3 worker nodes, 16 CPU and 32Gi RAM each).
+  Deployment alone requires ~20 CPU: 3 gateway pods (4 CPU each) + 3 NGINX pods (2 CPU each) + Redis (1 CPU) + system overhead.
+  Adding Locust benchmark requires ~2 CPU extra: 1 master + 3 workers (500m each).
+  OCP Medium (3 × 8 CPU) is insufficient — the third NGINX pod will stay `Pending`.
+- **`nfs-client` StorageClass** available on the cluster (dynamic NFS provisioner for Postgres and Redis PVCs)
+- **CrunchyData PGO operator** — install once cluster-wide (requires cluster-admin access, skips if already installed):
+  ```bash
+  make ocp-install-operator OCP_CLUSTER=<api-url>
+  ```
+
+---
+
+## Prepare secrets
+
+Create a secrets file at `charts/mcp-stack/profiles/ocp/values-pgo-secrets.yaml` (gitignored — never committed). This file is used for all deployments regardless of namespace:
 
 ```yaml
 mcpContextForge:
@@ -105,23 +122,39 @@ testing:
       secret: "<same as JWT_SECRET_KEY above>"
 ```
 
-**2. Set up namespace and Postgres:**
+---
+
+## Setup and deployment steps
+
+The Make commands below wrap Ansible playbooks under the hood (`ansible/ocp/playbooks/`). You can also run the playbooks directly — see [ansible/ocp/README.md](../../../ansible/ocp/README.md) for details.
+
+**0. Create Docker Hub pull secret** (one-time per namespace, required to pull `redis:7` without hitting anonymous rate limits):
+
+```bash
+oc create secret docker-registry dockerhub-pull \
+  --docker-server=docker.io \
+  --docker-username=<your-dockerhub-username> \
+  --docker-password=<your-dockerhub-password-or-token> \
+  -n <namespace>
+```
+
+**1. Set up namespace and Postgres:**
 
 ```bash
 make ocp-setup OCP_NS=<namespace>
 ```
 
-This checks the PGO operator is installed, creates the namespace if needed, applies the PostgresCluster CR (PVCs use dynamic `nfs-client` provisioning), waits for Postgres to be Ready, and grants the required schema privileges. Safe to run multiple times.
+Checks the PGO operator is installed, creates the namespace if needed, applies the PostgresCluster CR (PVCs use dynamic `nfs-client` provisioning), waits for Postgres to be Ready, and grants the required schema privileges. Safe to run multiple times.
 
-**3. Deploy the full stack:**
+**2. Deploy the full stack:**
 
 ```bash
 make ocp-deploy OCP_NS=<namespace>
 ```
 
-This runs `helm install` with the PGO values and secrets files. Deploys gateway (3 pods), NGINX (3 pods), Redis (PVC dynamically provisioned), and connects to the PGO-managed Postgres. Database migration runs as a `pre-install` hook directly to Postgres (bypasses PgBouncer for advisory lock safety). Locust is **not** deployed at this stage to save cluster resources — it is enabled on demand by `ocp-benchmark-setup`.
+Runs `helm install` with the PGO values and secrets files. Deploys gateway (3 pods), NGINX (3 pods), Redis (PVC dynamically provisioned), and connects to the PGO-managed Postgres. Database migration runs as a `pre-install` hook directly to Postgres (bypasses PgBouncer for advisory lock safety). Locust is **not** deployed at this stage — it is enabled on demand by `ocp-benchmark-setup`.
 
-**4. Run the MCP benchmark:**
+**3. Run the MCP benchmark:**
 
 ```bash
 make ocp-benchmark-setup OCP_NS=<namespace>
@@ -154,7 +187,7 @@ Scaling results (3 gateway pods, 3 NGINX, PGO Postgres, 3 Locust workers):
 make ocp-uninstall OCP_NS=<namespace>
 ```
 
-This runs `helm uninstall` to remove the gateway, NGINX, Redis, Locust, and fast-time-server pods. The PostgresCluster (Postgres + PgBouncer + repo-host) and the namespace itself are preserved, so you can re-run `make ocp-deploy` to redeploy quickly without re-creating Postgres. Dynamically provisioned PVs are cleaned up automatically by the `nfs-client` provisioner based on the StorageClass reclaim policy.
+Runs `helm uninstall` to remove the gateway, NGINX, Redis, Locust, and fast-time-server pods. The PostgresCluster (Postgres + PgBouncer + repo-host) and the namespace itself are preserved, so you can re-run `make ocp-deploy` without re-creating Postgres. Dynamically provisioned PVs are cleaned up automatically by the `nfs-client` provisioner based on the StorageClass reclaim policy.
 
 Each Make target prompts for confirmation before running. The underlying Ansible playbooks can also be run directly for more control:
 
@@ -164,27 +197,17 @@ ansible-playbook ansible/ocp/playbooks/deploy.yml -i ansible/ocp/inventory/clust
 ansible-playbook ansible/ocp/playbooks/benchmark.yml -i ansible/ocp/inventory/cluster.yml -e bench_users=500
 ```
 
-For step-by-step details, troubleshooting, or if the Make commands don't work as expected, see the detailed manual steps below.
+For step-by-step details, troubleshooting, or if the Make commands don't work as expected, see the detailed steps below.
 
 ---
 
 ## Detailed Manual Steps
 
-The sections below explain each step in detail — what the Make commands do internally, how to run things individually, and how to troubleshoot.
+> The sections below are for manual control or troubleshooting. For most deployments, the quick setup and deployment steps above are sufficient.
 
 ---
 
-## Prerequisites
-
-- **OCP cluster** with `oc` CLI access (developer or admin)
-- **CrunchyData PGO operator** installed from OperatorHub
-- **Helm** CLI installed locally
-- **Ansible** installed (`pip install ansible && ansible-galaxy collection install kubernetes.core`)
-- **`nfs-client` StorageClass** available on the cluster (dynamic NFS provisioner for Postgres and Redis PVCs)
-
----
-
-## Step 1: Create namespace
+### Step 1: Create namespace
 
 ```bash
 oc new-project contextforge
@@ -194,7 +217,7 @@ oc project contextforge
 
 ---
 
-## Step 2: Install CrunchyData PGO operator
+### Step 2: Install CrunchyData PGO operator
 
 Install from OperatorHub in the OCP web console:
 
@@ -212,7 +235,7 @@ oc get csv | grep crunchy
 
 ---
 
-## Step 3: Create PostgresCluster
+### Step 3: Create PostgresCluster
 
 Apply the CrunchyData PostgresCluster CR. A tuned example is provided in the chart:
 
@@ -241,7 +264,7 @@ The secret name follows the pattern `<cr-name>-pguser-<username>`. If you used t
 
 ---
 
-## Step 4: Prepare values and secrets files
+### Step 4: Prepare values and secrets files
 
 The chart includes an OCP-specific values override file: `charts/mcp-stack/profiles/ocp/values-pgo.yaml`
 
@@ -280,7 +303,7 @@ The chart includes an OCP-specific values override file: `charts/mcp-stack/profi
 
 ---
 
-## Step 5: Deploy with Helm
+### Step 5: Deploy with Helm
 
 A single `helm install` deploys the full stack. Database migration runs as a `pre-install` hook directly to Postgres (bypassing PgBouncer), so the schema is ready before gateway pods start.
 
@@ -308,7 +331,7 @@ Registration hooks run automatically — the fast-time server is registered and 
 
 ---
 
-## Step 6: Verify
+### Step 6: Verify
 
 **Gateway health:**
 
@@ -367,14 +390,13 @@ To validate the deployment with an MCP protocol benchmark using Locust.
 │  │  Session pool enabled  |  Cache TTLs 300s  |  7 plugins (permissive) │  │
 │  └───┬──────────┬──────────────────┬──────────────────┬────────────────┘  │
 │      │          │                  │                   │                   │
-│      │          ▼                  ▼                   ▼                   │
-│      │  ┌─────────────────┐  ┌────────────────┐  ┌────────────────┐      │
-│      │  │  fast-test       │  │  fast-time     │  │  fast-time     │      │
-│      │  │  server          │  │  server        │  │  server        │      │
-│      │  │  Rust, :8880     │  │  Go, :80       │  │  Go, :80       │      │
-│      │  │  echo, stats,    │  │  get-time,     │  │  (replica 2)   │      │
-│      │  │  get-system-time │  │  convert-time  │  │                │      │
-│      │  └─────────────────┘  └────────────────┘  └────────────────┘      │
+│      │          ▼                          ▼                               │
+│      │  ┌────────────────────┐  ┌────────────────────┐                    │
+│      │  │  fast-time server   │  │  fast-time server   │                    │
+│      │  │  Go, :80            │  │  Go, :80 (replica)  │                    │
+│      │  │  get-time,          │  │                      │                    │
+│      │  │  convert-time       │  │                      │                    │
+│      │  └────────────────────┘  └────────────────────┘                    │
 │      │                                                                    │
 │      │  Gateway also connects to:                                         │
 │      │                                                                    │
