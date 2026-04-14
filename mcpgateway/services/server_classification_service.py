@@ -11,8 +11,6 @@ Copyright 2026
 SPDX-License-Identifier: Apache-2.0
 """
 
-# flake8: noqa: DAR101, DAR201, DAR401
-
 # Future
 from __future__ import annotations
 
@@ -321,6 +319,13 @@ class ServerClassificationService:
 
         # Helper to accumulate metrics from a single PooledSession
         def _accumulate_session(url: str, session: object) -> None:
+            """Accumulate metrics from a single pooled session into server_metrics.
+
+            Args:
+                url: Server URL
+                session: PooledSession object with last_used and use_count attributes
+            """
+
             if url not in server_metrics:
                 server_metrics[url] = ServerUsageMetrics(url=url)
             if hasattr(session, "last_used") and session.last_used > 0:

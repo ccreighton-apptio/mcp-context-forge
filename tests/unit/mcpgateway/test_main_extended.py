@@ -38,6 +38,7 @@ import mcpgateway.db as db_mod
 from mcpgateway.main import (
     _build_internal_mcp_auth_scope,
     _build_internal_mcp_forwarded_user,
+    _create_jwt_identity_extractor,
     _decode_internal_mcp_auth_context,
     _enforce_internal_mcp_server_scope,
     _ensure_rpc_permission,
@@ -201,7 +202,10 @@ def _import_fresh_main_module(
         async def shutdown(self):  # noqa: D401 - trivial
             return None
 
-    monkeypatch.setattr("mcpgateway.plugins.framework.PluginManager", _DummyPluginManager)
+        def has_hooks_for(self, server_id):
+            return False
+
+    monkeypatch.setattr("mcpgateway.plugins.framework.TenantPluginManager", _DummyPluginManager)
 
     # Force selected module imports to fail to cover defensive ImportError paths.
     if force_import_error:
@@ -280,6 +284,163 @@ class TestConditionalPaths:
         # Test the functionality that exercises the loop path
         response = test_client.get("/health", headers=auth_headers)
         assert response.status_code == 200
+
+
+class TestJwtIdentityExtractor:
+    """Test _create_jwt_identity_extractor() factory and returned closure."""
+
+    def test_extractor_returns_sub_claim(self):
+        """Valid JWT with sub claim should return sub value."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"sub": "user-123", "email": "user@example.com"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "user-123"
+
+    def test_extractor_returns_email_claim_when_no_sub(self):
+        """Valid JWT with email but no sub should return email value."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"email": "user@example.com", "user_id": "uid-456"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "user@example.com"
+
+    def test_extractor_returns_user_id_claim_when_no_sub_or_email(self):
+        """Valid JWT with user_id but no sub/email should return user_id value."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"user_id": "uid-789", "iat": 1234567890}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "uid-789"
+
+    def test_extractor_returns_none_for_malformed_token(self):
+        """Malformed JWT should return None."""
+        extractor = _create_jwt_identity_extractor()
+        headers = {"Authorization": "Bearer not-a-valid-jwt"}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_returns_none_for_non_bearer_header(self):
+        """Non-Bearer auth header should return None."""
+        extractor = _create_jwt_identity_extractor()
+        headers = {"Authorization": "Basic dXNlcjpwYXNz"}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_returns_none_for_empty_authorization_header(self):
+        """Empty Authorization header should return None."""
+        extractor = _create_jwt_identity_extractor()
+        headers = {"Authorization": ""}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_returns_none_for_bearer_only_header(self):
+        """Header containing only 'Bearer ' with no token should return None."""
+        extractor = _create_jwt_identity_extractor()
+        headers = {"Authorization": "Bearer "}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_returns_none_for_missing_authorization_header(self):
+        """Missing Authorization header should return None."""
+        extractor = _create_jwt_identity_extractor()
+        headers = {}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_returns_none_for_token_with_no_identity_claims(self):
+        """JWT with none of the three identity claims should return None."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"iat": 1234567890, "exp": 1234567890, "jti": "random-id"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result is None
+
+    def test_extractor_handles_lowercase_bearer(self):
+        """Lowercase 'bearer' prefix should be handled correctly."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"sub": "user-lowercase"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "user-lowercase"
+
+    def test_extractor_handles_case_insensitive_header_lookup(self):
+        """Extractor should handle both 'authorization' and 'Authorization' keys."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"sub": "user-case"}, "secret", algorithm="HS256")
+
+        # Test lowercase key
+        headers_lower = {"authorization": f"Bearer {token}"}
+        assert extractor(headers_lower) == "user-case"
+
+        # Test uppercase key
+        headers_upper = {"Authorization": f"Bearer {token}"}
+        assert extractor(headers_upper) == "user-case"
+
+    def test_extractor_returns_none_on_jwt_decode_exception(self):
+        """JWT decode raising an exception should return None and log debug message."""
+        # Standard
+        from unittest.mock import patch
+
+        extractor = _create_jwt_identity_extractor()
+
+        # Create a valid-looking token that will fail decode
+        with patch("jwt.decode", side_effect=Exception("Decode failed")):
+            headers = {"Authorization": "Bearer some-token"}
+            result = extractor(headers)
+            assert result is None
+
+    def test_extractor_prefers_sub_over_email_and_user_id(self):
+        """When all three claims present, sub should be preferred."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"sub": "user-sub", "email": "user@example.com", "user_id": "uid-123"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "user-sub"
+
+    def test_extractor_prefers_email_over_user_id(self):
+        """When email and user_id present but no sub, email should be preferred."""
+        # Third-Party
+        import jwt
+
+        extractor = _create_jwt_identity_extractor()
+        token = jwt.encode({"email": "user@example.com", "user_id": "uid-123"}, "secret", algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        result = extractor(headers)
+        assert result == "user@example.com"
 
 
 class TestInternalTrustedMcpTransportBridge:
@@ -606,6 +767,7 @@ class TestInternalTrustedMcpTransportBridge:
 
         monkeypatch.setattr("mcpgateway.main.settings.email_auth_enabled", False)
         monkeypatch.setattr("mcpgateway.main.streamable_http_auth", _fake_streamable_http_auth)
+        monkeypatch.setattr("mcpgateway.main.get_plugin_manager", AsyncMock(return_value=None))
 
         error_response, auth_context = await _run_internal_mcp_authentication(
             method="POST",
@@ -636,7 +798,7 @@ class TestInternalTrustedMcpTransportBridge:
 
         mock_pm = MagicMock()
         mock_pm.has_hooks_for = MagicMock(side_effect=lambda ht: ht == HttpHookType.HTTP_PRE_REQUEST)
-        monkeypatch.setattr(main_mod, "plugin_manager", mock_pm)
+        monkeypatch.setattr(main_mod, "get_plugin_manager", AsyncMock(return_value=mock_pm))
 
         transformed_headers = {"authorization": "Bearer exchanged-token", "x-injected": "value"}
         original_headers = {"authorization": "Bearer original-token"}
@@ -741,6 +903,7 @@ class TestInternalTrustedMcpTransportBridge:
         monkeypatch.setattr("mcpgateway.main.settings.email_auth_enabled", True)
         monkeypatch.setattr("mcpgateway.main.streamable_http_auth", _fake_streamable_http_auth)
         monkeypatch.setattr("mcpgateway.main.token_scoping_middleware", _passthrough_middleware)
+        monkeypatch.setattr("mcpgateway.main.get_plugin_manager", AsyncMock(return_value=None))
 
         error_response, auth_context = await _run_internal_mcp_authentication(
             method="POST",
@@ -770,6 +933,7 @@ class TestInternalTrustedMcpTransportBridge:
         monkeypatch.setattr("mcpgateway.main.settings.email_auth_enabled", True)
         monkeypatch.setattr("mcpgateway.main.streamable_http_auth", _ignored_streamable_http_auth)
         monkeypatch.setattr("mcpgateway.main.token_scoping_middleware", _none_middleware)
+        monkeypatch.setattr("mcpgateway.main.get_plugin_manager", AsyncMock(return_value=None))
 
         error_response, auth_context = await _run_internal_mcp_authentication(
             method="GET",
@@ -1212,9 +1376,6 @@ class TestApplicationStartupPaths:
         # Standard
         from contextlib import ExitStack
 
-        # First-Party
-        import mcpgateway.main as main_mod
-
         mock_logging_service = MagicMock()
         mock_logging_service.initialize = AsyncMock()
         mock_logging_service.shutdown = AsyncMock()
@@ -1232,7 +1393,6 @@ class TestApplicationStartupPaths:
 
         monkeypatch.setattr(settings, "require_strong_secrets", False, raising=False)
         monkeypatch.setattr(settings, "dev_mode", True, raising=False)
-        monkeypatch.setattr(main_mod, "plugin_manager", None, raising=False)
 
         with ExitStack() as stack:
             stack.enter_context(patch("mcpgateway.main.logging_service", mock_logging_service))
@@ -2275,7 +2435,9 @@ class TestAdminAuthMiddleware:
 
         assert response == "ok"
         # Verify has_admin_permission was called with the validated team_id
-        mock_permission_service.has_admin_permission.assert_awaited_once_with("dev@example.com", team_id="a1b2c3d4e5f6789012345678abcdef01", token_teams=["a1b2c3d4e5f6789012345678abcdef01", "fedcba9876543210fedcba9876543210"])
+        mock_permission_service.has_admin_permission.assert_awaited_once_with(
+            "dev@example.com", team_id="a1b2c3d4e5f6789012345678abcdef01", token_teams=["a1b2c3d4e5f6789012345678abcdef01", "fedcba9876543210fedcba9876543210"]
+        )
 
     @pytest.mark.asyncio
     async def test_admin_auth_team_scoped_request_ignores_nonmember_team_id(self, monkeypatch):
@@ -4268,6 +4430,7 @@ class TestLifespanAdvanced:
         # Feature flags
         monkeypatch.setattr(main_mod.settings, "mcp_session_pool_enabled", True)
         monkeypatch.setattr(main_mod.settings, "mcpgateway_session_affinity_enabled", True)
+        monkeypatch.setattr(main_mod.settings, "mcp_session_pool_jwt_identity_extraction", True)
         monkeypatch.setattr(main_mod.settings, "enable_header_passthrough", True)
         monkeypatch.setattr(main_mod.settings, "mcpgateway_tool_cancellation_enabled", False)
         monkeypatch.setattr(main_mod.settings, "mcpgateway_elicitation_enabled", True)
@@ -4280,12 +4443,16 @@ class TestLifespanAdvanced:
         monkeypatch.setattr(main_mod.settings, "metrics_aggregation_auto_start", True)
         monkeypatch.setattr(main_mod.settings, "metrics_aggregation_backfill_hours", 1)
         monkeypatch.setattr(main_mod.settings, "metrics_aggregation_window_minutes", 0)
+        # Exercise the llmchat-enabled branch in lifespan (the lazy import
+        # and init_redis() call are skipped unless this flag is true).
+        monkeypatch.setattr(main_mod.settings, "llmchat_enabled", True)
 
-        plugin = MagicMock()
-        plugin.initialize = AsyncMock()
-        plugin.shutdown = AsyncMock(side_effect=Exception("boom"))
-        plugin.plugin_count = 2
-        monkeypatch.setattr(main_mod, "plugin_manager", plugin)
+        _default_manager = MagicMock()
+        _default_manager.plugin_count = 2
+        mock_get_pm = AsyncMock(return_value=_default_manager)
+        mock_shutdown_factory = AsyncMock(side_effect=Exception("boom"))
+        monkeypatch.setattr(main_mod, "get_plugin_manager", mock_get_pm)
+        monkeypatch.setattr(main_mod, "shutdown_plugin_manager_factory", mock_shutdown_factory)
 
         logging_service = make_service()
         logging_service.configure_uvicorn_after_startup = MagicMock()
@@ -4391,8 +4558,8 @@ class TestLifespanAdvanced:
         async with main_mod.lifespan(main_mod.app):
             await asyncio.sleep(0)
 
-        plugin.initialize.assert_called_once()
-        plugin.shutdown.assert_called_once()
+        mock_get_pm.assert_awaited_once()
+        mock_shutdown_factory.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_lifespan_exits_on_plugin_initialization_failed(self, monkeypatch):
@@ -4459,18 +4626,14 @@ class TestLifespanAdvanced:
 
         monkeypatch.setattr(registry_cache_mod, "get_cache_invalidation_subscriber", MagicMock(return_value=subscriber))
 
-        plugin = MagicMock()
-        plugin.initialize = AsyncMock(side_effect=Exception("Plugin initialization failed"))
-        plugin.shutdown = AsyncMock()
-        plugin.plugin_count = 1
-        monkeypatch.setattr(main_mod, "plugin_manager", plugin)
+        monkeypatch.setattr(main_mod, "get_plugin_manager", AsyncMock(side_effect=Exception("Plugin initialization failed")))
+        monkeypatch.setattr(main_mod, "shutdown_plugin_manager_factory", AsyncMock())
 
         with pytest.raises(SystemExit) as excinfo:
             async with main_mod.lifespan(main_mod.app):
                 pass
 
         assert excinfo.value.code == 1
-        plugin.shutdown.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_shutdown_services_continues_on_exception(self):
@@ -5151,6 +5314,17 @@ def allow_permission(monkeypatch):
 
 class TestA2AEndpoints:
     """Exercise A2A endpoints in main.py."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_a2a_router(self, main_app_with_a2a_router):
+        """Guarantee ``a2a_router`` is mounted on ``main.app`` for this class.
+
+        Under xdist a worker may have imported main while A2A was
+        transiently disabled, leaving the router unmounted.
+        ``main_app_with_a2a_router`` dynamically mounts it on the live
+        app so every test in this class can hit /a2a/* deterministically.
+        """
+        return main_app_with_a2a_router
 
     @staticmethod
     def _agent_read(agent_id: str = "agent-1") -> dict:
@@ -7092,7 +7266,7 @@ class TestRpcHandling:
         with (
             patch("mcpgateway.main.SessionLocal", return_value=mock_db),
             patch("mcpgateway.main._authorize_internal_mcp_request", new=AsyncMock(return_value={"email": "user@example.com"})),
-            patch("mcpgateway.main.plugin_manager", None),
+            patch("mcpgateway.main.get_plugin_manager", new=AsyncMock(return_value=None)),
         ):
             response = await handler(request)
 
@@ -7143,7 +7317,7 @@ class TestRpcHandling:
         with (
             patch("mcpgateway.main.SessionLocal", return_value=mock_db),
             patch("mcpgateway.main._authorize_internal_mcp_request", new=AsyncMock(return_value={"email": "user@example.com"})),
-            patch("mcpgateway.main.plugin_manager", mock_plugin_manager),
+            patch("mcpgateway.main.get_plugin_manager", new=AsyncMock(return_value=mock_plugin_manager)),
         ):
             response = await handler(request)
 
@@ -11786,18 +11960,27 @@ class TestRemainingCoverageGaps:
         )
 
     async def test_module_level_skips_plugin_settings_validation_when_plugins_disabled(self, monkeypatch):
-        mod = _import_fresh_main_module(
+        # First-Party
+        import mcpgateway.plugins.framework as plugin_framework
+
+        # Reset plugin state before test
+        plugin_framework.enable_plugins(False)
+        plugin_framework.reset_plugin_manager_factory()
+
+        _import_fresh_main_module(
             monkeypatch,
             env={
                 "PLUGINS_ENABLED": "false",
                 "PLUGINS_SERVER_PORT": "abc",
             },
         )
-        await asyncio.sleep(0)
-        assert mod.plugin_manager is None
+        # settings.enabled is False → get_plugin_manager() short-circuits to None
+        result = await plugin_framework.get_plugin_manager()
+        assert result is None
 
     async def test_module_level_uses_settings_backed_plugin_enablement(self, monkeypatch):
         # First-Party
+        import mcpgateway.plugins.framework as plugin_framework
         import mcpgateway.plugins.framework.settings as plugin_settings_mod
 
         monkeypatch.delenv("PLUGINS_ENABLED", raising=False)
@@ -11812,9 +11995,26 @@ class TestRemainingCoverageGaps:
             lambda **_kwargs: SimpleNamespace(config_file="plugins/config.yaml", plugin_timeout=30),
         )
 
-        mod = _import_fresh_main_module(monkeypatch)
-        await asyncio.sleep(0)
-        assert mod.plugin_manager is not None
+        class _DummyFactory:
+            def __init__(self, *_a, **_k):
+                pass
+
+            async def get_manager(self, server_id=None):
+                return SimpleNamespace(plugin_count=0)
+
+        monkeypatch.setattr(plugin_framework, "TenantPluginManagerFactory", _DummyFactory)
+        plugin_framework.reset_plugin_manager_factory()
+        plugin_framework.enable_plugins(True)
+
+        # Create the factory instance
+        plugin_framework._plugin_manager_factory = _DummyFactory()
+
+        _import_fresh_main_module(monkeypatch)
+        # settings.enabled is True → get_plugin_manager() returns a manager
+        result = await plugin_framework.get_plugin_manager()
+        assert result is not None
+        # Clean up the global factory to avoid polluting subsequent tests
+        plugin_framework.reset_plugin_manager_factory()
 
 
 class TestHardeningHelperCoverage:

@@ -44,7 +44,7 @@ from mcpgateway.db import get_for_update
 from mcpgateway.db import Prompt as DbPrompt
 from mcpgateway.db import PromptMetric, PromptMetricsHourly, server_prompt_association
 from mcpgateway.observability import create_span, set_span_attribute, set_span_error
-from mcpgateway.plugins.framework import get_plugin_manager, GlobalContext, PluginContextTable, PluginManager, PromptHookType, PromptPosthookPayload, PromptPrehookPayload
+from mcpgateway.plugins.framework import GlobalContext, PluginContextTable, PromptHookType, PromptPosthookPayload, PromptPrehookPayload
 from mcpgateway.schemas import PromptCreate, PromptMetrics, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.base_service import BaseService
@@ -283,7 +283,6 @@ class PromptService(BaseService):
         self._event_service = EventService(channel_name="mcpgateway:prompt_events")
         # Use the module-level singleton for template caching
         self._jinja_env = _get_jinja_env()
-        self._plugin_manager: PluginManager | None = get_plugin_manager()
 
     @staticmethod
     def _should_fetch_gateway_prompt(prompt: DbPrompt) -> bool:
@@ -507,7 +506,7 @@ class PromptService(BaseService):
         from mcpgateway.services.metrics_query_service import get_top_performers_combined  # pylint: disable=import-outside-toplevel
 
         results = get_top_performers_combined(
-            db=db,
+            db,
             metric_type="prompt",
             entity_model=DbPrompt,
             limit=effective_limit,
@@ -765,13 +764,17 @@ class PromptService(BaseService):
             # Check for existing server with the same name
             if visibility.lower() == "public":
                 # Check for existing public prompt with the same name and gateway_id
-                existing_prompt = db.execute(select(DbPrompt).where(DbPrompt.name == computed_name, DbPrompt.visibility == "public", DbPrompt.gateway_id == gateway_id)).scalar_one_or_none()
+                existing_prompt = db.execute(
+                    select(DbPrompt).where(DbPrompt.name == computed_name, DbPrompt.visibility == "public", DbPrompt.gateway_id == gateway_id)
+                ).scalar_one_or_none()  # pylint: disable=comparison-with-callable
                 if existing_prompt:
                     raise PromptNameConflictError(computed_name, enabled=existing_prompt.enabled, prompt_id=existing_prompt.id, visibility=existing_prompt.visibility)
             elif visibility.lower() == "team":
                 # Check for existing team prompt with the same name and gateway_id
                 existing_prompt = db.execute(
-                    select(DbPrompt).where(DbPrompt.name == computed_name, DbPrompt.visibility == "team", DbPrompt.team_id == team_id, DbPrompt.gateway_id == gateway_id)
+                    select(DbPrompt).where(
+                        DbPrompt.name == computed_name, DbPrompt.visibility == "team", DbPrompt.team_id == team_id, DbPrompt.gateway_id == gateway_id
+                    )  # pylint: disable=comparison-with-callable
                 ).scalar_one_or_none()
                 if existing_prompt:
                     raise PromptNameConflictError(computed_name, enabled=existing_prompt.enabled, prompt_id=existing_prompt.id, visibility=existing_prompt.visibility)
@@ -1355,7 +1358,7 @@ class PromptService(BaseService):
 
             # Use unified pagination helper - handles both page and cursor pagination
             pag_result = await unified_paginate(
-                db=db,
+                db,
                 query=query,
                 page=page,
                 per_page=per_page,
@@ -1741,11 +1744,11 @@ class PromptService(BaseService):
             via _apply_access_control() to ensure multi-tenancy security.
         """
         try:
-            return db.execute(scoped_query.where(or_(DbPrompt.name == prompt_id, DbPrompt.id == prompt_id))).scalar_one_or_none()
+            return db.execute(scoped_query.where(or_(DbPrompt.name == prompt_id, DbPrompt.id == prompt_id))).scalar_one_or_none()  # pylint: disable=comparison-with-callable
         except MultipleResultsFound:
             # OR matched multiple rows — try name-only (MCP spec primary key)
             try:
-                return db.execute(scoped_query.where(DbPrompt.name == prompt_id)).scalar_one_or_none()
+                return db.execute(scoped_query.where(DbPrompt.name == prompt_id)).scalar_one_or_none()  # pylint: disable=comparison-with-callable
             except MultipleResultsFound:
                 raise PromptError(f"Prompt name '{prompt_id}' is ambiguous across multiple scopes; use /servers/{{id}}/mcp to disambiguate.")
 
@@ -1822,7 +1825,6 @@ class PromptService(BaseService):
         if trace_id and observability_service:
             try:
                 db_span_id = observability_service.start_span(
-                    db=db,
                     trace_id=trace_id,
                     name="prompt.render",
                     attributes={
@@ -1854,8 +1856,9 @@ class PromptService(BaseService):
         with create_span("prompt.render", span_attributes) as span:
             try:
                 # Check if any prompt hooks are registered to avoid unnecessary context creation
-                has_pre_fetch = self._plugin_manager and self._plugin_manager.has_hooks_for(PromptHookType.PROMPT_PRE_FETCH)
-                has_post_fetch = self._plugin_manager and self._plugin_manager.has_hooks_for(PromptHookType.PROMPT_POST_FETCH)
+                plugin_manager = await self._get_plugin_manager(server_id)
+                has_pre_fetch = plugin_manager and plugin_manager.has_hooks_for(PromptHookType.PROMPT_PRE_FETCH)
+                has_post_fetch = plugin_manager and plugin_manager.has_hooks_for(PromptHookType.PROMPT_POST_FETCH)
 
                 # Initialize plugin context variables only if hooks are registered
                 context_table = None
@@ -1878,7 +1881,7 @@ class PromptService(BaseService):
                         global_context = GlobalContext(request_id=request_id, user=user, server_id=server_id, tenant_id=tenant_id)
 
                 if has_pre_fetch:
-                    pre_result, context_table = await self._plugin_manager.invoke_hook(
+                    pre_result, context_table = await plugin_manager.invoke_hook(
                         PromptHookType.PROMPT_PRE_FETCH,
                         payload=PromptPrehookPayload(prompt_id=prompt_id, args=arguments),
                         global_context=global_context,
@@ -1966,7 +1969,7 @@ class PromptService(BaseService):
                         raise PromptError(f"Failed to process prompt: {str(e)}")
 
                 if has_post_fetch:
-                    post_result, _ = await self._plugin_manager.invoke_hook(
+                    post_result, _ = await plugin_manager.invoke_hook(
                         PromptHookType.PROMPT_POST_FETCH,
                         payload=PromptPosthookPayload(prompt_id=prompt.name, result=result),
                         global_context=global_context,
@@ -2064,7 +2067,6 @@ class PromptService(BaseService):
                 if db_span_id and observability_service and not db_span_ended:
                     try:
                         observability_service.end_span(
-                            db=db,
                             span_id=db_span_id,
                             status="ok" if success else "error",
                             status_message=error_message if error_message else None,
@@ -2159,17 +2161,25 @@ class PromptService(BaseService):
             if computed_name != prompt.name:
                 if visibility.lower() == "public":
                     # Lock any conflicting row so concurrent updates cannot race.
-                    existing_prompt = get_for_update(db, DbPrompt, where=and_(DbPrompt.name == computed_name, DbPrompt.visibility == "public", DbPrompt.id != prompt.id))
+                    existing_prompt = get_for_update(
+                        db, DbPrompt, where=and_(DbPrompt.name == computed_name, DbPrompt.visibility == "public", DbPrompt.id != prompt.id)
+                    )  # pylint: disable=comparison-with-callable
                     if existing_prompt:
                         raise PromptNameConflictError(computed_name, enabled=existing_prompt.enabled, prompt_id=existing_prompt.id, visibility=existing_prompt.visibility)
                 elif visibility.lower() == "team" and team_id:
-                    existing_prompt = get_for_update(db, DbPrompt, where=and_(DbPrompt.name == computed_name, DbPrompt.visibility == "team", DbPrompt.team_id == team_id, DbPrompt.id != prompt.id))
+                    existing_prompt = get_for_update(
+                        db, DbPrompt, where=and_(DbPrompt.name == computed_name, DbPrompt.visibility == "team", DbPrompt.team_id == team_id, DbPrompt.id != prompt.id)
+                    )  # pylint: disable=comparison-with-callable
                     logger.info(f"Existing prompt check result: {existing_prompt}")
                     if existing_prompt:
                         raise PromptNameConflictError(computed_name, enabled=existing_prompt.enabled, prompt_id=existing_prompt.id, visibility=existing_prompt.visibility)
                 elif visibility.lower() == "private":
                     existing_prompt = get_for_update(
-                        db, DbPrompt, where=and_(DbPrompt.name == computed_name, DbPrompt.visibility == "private", DbPrompt.owner_email == owner_email, DbPrompt.id != prompt.id)
+                        db,
+                        DbPrompt,
+                        where=and_(
+                            DbPrompt.name == computed_name, DbPrompt.visibility == "private", DbPrompt.owner_email == owner_email, DbPrompt.id != prompt.id
+                        ),  # pylint: disable=comparison-with-callable
                     )
                     if existing_prompt:
                         raise PromptNameConflictError(computed_name, enabled=existing_prompt.enabled, prompt_id=existing_prompt.id, visibility=existing_prompt.visibility)

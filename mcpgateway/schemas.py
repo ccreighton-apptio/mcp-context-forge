@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 
 # Third-Party
 import orjson
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator, model_serializer, model_validator, SecretStr, ValidationInfo
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator, model_serializer, model_validator, SecretStr, ValidationError, ValidationInfo
 
 # First-Party
 from mcpgateway.common.models import Annotations, ImageContent
@@ -57,6 +57,68 @@ _HOSTNAME_RE: Pattern[str] = re.compile(r"^(https?://)?([a-zA-Z0-9.-]+)(:[0-9]+)
 _SLUG_RE: Pattern[str] = re.compile(r"^[a-z0-9-]+$")
 
 _VALID_VISIBILITY = {"private", "team", "public"}
+
+_MAX_MAPPING_ENTRIES = 50
+_MAX_MAPPING_KEY_LENGTH = 128
+
+_VALID_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$")
+_BLOCKED_HEADER_MAPPING_TARGETS = frozenset(
+    name.lower()
+    for name in (
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "host",
+        "transfer-encoding",
+        "content-length",
+        "connection",
+        "upgrade",
+    )
+)
+_SENSITIVE_HEADER_MAPPING_PATTERNS = (
+    re.compile(r"^x-api-key$", re.IGNORECASE),
+    re.compile(r"^api-key$", re.IGNORECASE),
+    re.compile(r"^apikey$", re.IGNORECASE),
+    re.compile(r"^x-(?:auth|api|access|refresh|client|bearer|session|security)[-_]?(?:token|secret|key)$", re.IGNORECASE),
+    re.compile(r"^(?:auth|api|access|refresh|client|bearer|session|security)[-_]?(?:token|secret|key)$", re.IGNORECASE),
+)
+
+
+def _validate_mapping_size(v: dict | None) -> dict | None:
+    """Validate that a mapping dict does not exceed size limits.
+
+    Shared by ToolCreate and ToolUpdate field validators.
+    """
+    if v is None:
+        return v
+    if len(v) > _MAX_MAPPING_ENTRIES:
+        raise ValueError(f"Mapping must not contain more than {_MAX_MAPPING_ENTRIES} entries")
+    for k, val in v.items():
+        if len(k) > _MAX_MAPPING_KEY_LENGTH:
+            raise ValueError(f"Mapping key exceeds {_MAX_MAPPING_KEY_LENGTH} characters: '{k[:32]}...'")
+        if len(val) > _MAX_MAPPING_KEY_LENGTH:
+            raise ValueError(f"Mapping value exceeds {_MAX_MAPPING_KEY_LENGTH} characters: '{val[:32]}...'")
+    return v
+
+
+def _validate_header_mapping_targets(v: dict | None) -> dict | None:
+    """Validate that header_mapping target names are safe and well-formed.
+
+    Rejects sensitive headers (Authorization, Cookie, Host, etc.) and
+    names that violate RFC 7230 token syntax. Applied at registration time;
+    tool_service applies the same checks at invocation as defense-in-depth.
+    """
+    if v is None:
+        return v
+    for target in v.values():
+        if target.strip().lower() in _BLOCKED_HEADER_MAPPING_TARGETS:
+            raise ValueError(f"header_mapping targets blocked header {repr(target[:64])}")
+        if any(p.match(target) for p in _SENSITIVE_HEADER_MAPPING_PATTERNS):
+            raise ValueError(f"header_mapping targets sensitive header {repr(target[:64])}")
+        if not _VALID_HTTP_HEADER_NAME.match(target):
+            raise ValueError(f"header_mapping contains invalid header name {repr(target[:64])}")
+    return v
 
 
 def _coerce_visibility(v: Optional[str]) -> Optional[str]:
@@ -365,6 +427,43 @@ class AuthenticationValues(BaseModelWithConfigDict):
     authHeaders: Optional[List[Dict[str, str]]] = Field(None, alias="authHeaders", description="List of custom headers for authentication (multi-header format)")  # noqa: N815
 
 
+# Minimal valid JSON Schema used as the default input_schema for REST tools.
+_DEFAULT_INPUT_SCHEMA: dict = {"type": "object", "properties": {}}
+
+
+def _extract_rest_url_components(values: dict) -> dict:
+    """Extract ``base_url`` and ``path_template`` from ``url`` for REST integration tools.
+
+    Shared logic used by both :class:`ToolCreate` and :class:`ToolUpdate` model
+    validators so the URL-parsing behaviour stays consistent across create and
+    update paths.
+
+    Args:
+        values: The raw model input dict (mutated in-place).
+
+    Returns:
+        The same *values* dict, potentially with ``base_url`` and
+        ``path_template`` populated.
+    """
+    url = values.get("url")
+    if not url:
+        return values
+
+    parsed = urlparse(str(url))
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    path_template = parsed.path
+
+    if path_template:
+        path_template = "/" + path_template.lstrip("/")
+
+    if not values.get("base_url"):
+        values["base_url"] = base_url
+    if not values.get("path_template"):
+        values["path_template"] = path_template
+
+    return values
+
+
 class ToolCreate(BaseModel):
     """
     Represents the configuration for creating a tool with various attributes and settings.
@@ -396,7 +495,7 @@ class ToolCreate(BaseModel):
     integration_type: Literal["REST", "MCP", "A2A"] = Field("REST", description="'REST' for individual endpoints, 'MCP' for gateway-discovered tools, 'A2A' for A2A agents")
     request_type: Literal["GET", "POST", "PUT", "DELETE", "PATCH", "SSE", "STDIO", "STREAMABLEHTTP"] = Field("SSE", description="HTTP method to be used for invoking the tool")
     headers: Optional[Dict[str, str]] = Field(None, description="Additional headers to send when invoking the tool")
-    input_schema: Optional[Dict[str, Any]] = Field(default_factory=lambda: {"type": "object", "properties": {}}, description="JSON Schema for validating tool parameters", alias="inputSchema")
+    input_schema: Optional[Dict[str, Any]] = Field(default_factory=lambda: dict(_DEFAULT_INPUT_SCHEMA), description="JSON Schema for validating tool parameters", alias="inputSchema")
     output_schema: Optional[Dict[str, Any]] = Field(default=None, description="JSON Schema for validating tool output", alias="outputSchema")
     annotations: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
@@ -415,8 +514,8 @@ class ToolCreate(BaseModel):
     # Passthrough REST fields
     base_url: Optional[str] = Field(None, description="Base URL for REST passthrough")
     path_template: Optional[str] = Field(None, description="Path template for REST passthrough")
-    query_mapping: Optional[Dict[str, Any]] = Field(None, description="Query mapping for REST passthrough")
-    header_mapping: Optional[Dict[str, Any]] = Field(None, description="Header mapping for REST passthrough")
+    query_mapping: Optional[Dict[str, str]] = Field(None, description="Query mapping for REST passthrough")
+    header_mapping: Optional[Dict[str, str]] = Field(None, description="Header mapping for REST passthrough")
     timeout_ms: Optional[int] = Field(default=None, description="Timeout in milliseconds for REST passthrough (20000 if integration_type='REST', else None)")
     expose_passthrough: Optional[bool] = Field(True, description="Expose passthrough endpoint for this tool")
     allowlist: Optional[List[str]] = Field(None, description="Allowed upstream hosts/schemes for passthrough")
@@ -806,33 +905,22 @@ class ToolCreate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def extract_base_url_and_path_template(cls, values: dict) -> dict:
-        """
-        Only for integration_type 'REST':
-        If 'url' is provided, extract 'base_url' and 'path_template'.
-        Ensures path_template starts with a single '/'.
+        """For REST tools: extract URL components and ensure a default input_schema.
 
         Args:
             values (dict): The input values to process.
 
         Returns:
-            dict: The updated values with base_url and path_template if applicable.
+            dict: The updated values with base_url and path_template extracted from url.
         """
-        integration_type = values.get("integration_type")
-        if integration_type != "REST":
-            # Only process for REST, skip for others
+        if values.get("integration_type") != "REST":
             return values
-        url = values.get("url")
-        if url:
-            parsed = urlparse(str(url))
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-            path_template = parsed.path
-            # Ensure path_template starts with a single '/'
-            if path_template:
-                path_template = "/" + path_template.lstrip("/")
-            if not values.get("base_url"):
-                values["base_url"] = base_url
-            if not values.get("path_template"):
-                values["path_template"] = path_template
+
+        _extract_rest_url_components(values)
+
+        if not values.get("input_schema"):
+            values["input_schema"] = dict(_DEFAULT_INPUT_SCHEMA)
+
         return values
 
     @field_validator("base_url")
@@ -944,6 +1032,18 @@ class ToolCreate(BaseModel):
                     raise ValueError(f"Unknown plugin: {plugin}")
         return v
 
+    @field_validator("query_mapping", "header_mapping")
+    @classmethod
+    def validate_mapping_size(cls, v: dict | None) -> dict | None:
+        """Validate that mapping dicts do not exceed size limits."""
+        return _validate_mapping_size(v)
+
+    @field_validator("header_mapping")
+    @classmethod
+    def validate_header_mapping_targets(cls, v: dict | None) -> dict | None:
+        """Reject header_mapping targets that are sensitive or malformed."""
+        return _validate_header_mapping_targets(v)
+
     @model_validator(mode="after")
     def handle_timeout_ms_defaults(self):
         """Handle timeout_ms defaults based on integration_type and expose_passthrough.
@@ -984,8 +1084,8 @@ class ToolUpdate(BaseModelWithConfigDict):
     # Passthrough REST fields
     base_url: Optional[str] = Field(None, description="Base URL for REST passthrough")
     path_template: Optional[str] = Field(None, description="Path template for REST passthrough")
-    query_mapping: Optional[Dict[str, Any]] = Field(None, description="Query mapping for REST passthrough")
-    header_mapping: Optional[Dict[str, Any]] = Field(None, description="Header mapping for REST passthrough")
+    query_mapping: Optional[Dict[str, str]] = Field(None, description="Query mapping for REST passthrough")
+    header_mapping: Optional[Dict[str, str]] = Field(None, description="Header mapping for REST passthrough")
     timeout_ms: Optional[int] = Field(default=None, description="Timeout in milliseconds for REST passthrough (20000 if integration_type='REST', else None)")
     expose_passthrough: Optional[bool] = Field(True, description="Expose passthrough endpoint for this tool")
     allowlist: Optional[List[str]] = Field(None, description="Allowed upstream hosts/schemes for passthrough")
@@ -1193,6 +1293,31 @@ class ToolUpdate(BaseModelWithConfigDict):
                     values["auth"] = {"auth_type": "authheaders", "auth_value": None}
         return values
 
+    @model_validator(mode="before")
+    @classmethod
+    def extract_base_url_and_path_template(cls, values: dict) -> dict:
+        """For REST tools: extract URL components and normalise empty input_schema.
+
+        Args:
+            values (dict): The input values to process.
+
+        Returns:
+            dict: The updated values with base_url and path_template extracted from url.
+        """
+        if values.get("integration_type") != "REST":
+            return values
+
+        _extract_rest_url_components(values)
+
+        # Normalise explicitly-empty input_schema to the typed default.
+        # None is left alone (partial update semantics — omitted fields
+        # should not overwrite existing values in the database).
+        input_schema = values.get("input_schema")
+        if input_schema is not None and isinstance(input_schema, dict) and not input_schema:
+            values["input_schema"] = dict(_DEFAULT_INPUT_SCHEMA)
+
+        return values
+
     @field_validator("displayName")
     @classmethod
     def validate_display_name(cls, v: Optional[str]) -> Optional[str]:
@@ -1245,34 +1370,6 @@ class ToolUpdate(BaseModelWithConfigDict):
             raise ValueError("Cannot update tools to MCP integration type. MCP tools are managed by the gateway service.")
         if integration_type == "A2A":
             raise ValueError("Cannot update tools to A2A integration type. A2A tools are managed by the A2A service.")
-        return values
-
-    @model_validator(mode="before")
-    @classmethod
-    def extract_base_url_and_path_template(cls, values: dict) -> dict:
-        """
-        If 'integration_type' is 'REST' and 'url' is provided, extract 'base_url' and 'path_template'.
-        Ensures path_template starts with a single '/'.
-
-        Args:
-            values (dict): The input values to process.
-
-        Returns:
-            dict: The updated values with base_url and path_template if applicable.
-        """
-        integration_type = values.get("integration_type")
-        url = values.get("url")
-        if integration_type == "REST" and url:
-            parsed = urlparse(str(url))
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-            path_template = parsed.path
-            # Ensure path_template starts with a single '/'
-            if path_template:
-                path_template = "/" + path_template.lstrip("/")
-            if not values.get("base_url"):
-                values["base_url"] = base_url
-            if not values.get("path_template"):
-                values["path_template"] = path_template
         return values
 
     @field_validator("base_url")
@@ -1384,6 +1481,18 @@ class ToolUpdate(BaseModelWithConfigDict):
                     raise ValueError(f"Unknown plugin: {plugin}")
         return v
 
+    @field_validator("query_mapping", "header_mapping")
+    @classmethod
+    def validate_mapping_size(cls, v: dict | None) -> dict | None:
+        """Validate that mapping dicts do not exceed size limits."""
+        return _validate_mapping_size(v)
+
+    @field_validator("header_mapping")
+    @classmethod
+    def validate_header_mapping_targets(cls, v: dict | None) -> dict | None:
+        """Reject header_mapping targets that are sensitive or malformed."""
+        return _validate_header_mapping_targets(v)
+
 
 class ToolRead(BaseModelWithConfigDict):
     """Schema for reading tool information.
@@ -1451,8 +1560,8 @@ class ToolRead(BaseModelWithConfigDict):
     # Passthrough REST fields
     base_url: Optional[str] = Field(None, description="Base URL for REST passthrough")
     path_template: Optional[str] = Field(None, description="Path template for REST passthrough")
-    query_mapping: Optional[Dict[str, Any]] = Field(None, description="Query mapping for REST passthrough")
-    header_mapping: Optional[Dict[str, Any]] = Field(None, description="Header mapping for REST passthrough")
+    query_mapping: Optional[Dict[str, str]] = Field(None, description="Query mapping for REST passthrough")
+    header_mapping: Optional[Dict[str, str]] = Field(None, description="Header mapping for REST passthrough")
     timeout_ms: Optional[int] = Field(20000, description="Timeout in milliseconds for REST passthrough")
     expose_passthrough: Optional[bool] = Field(True, description="Expose passthrough endpoint for this tool")
     allowlist: Optional[List[str]] = Field(None, description="Allowed upstream hosts/schemes for passthrough")
@@ -7850,3 +7959,337 @@ class PerformanceHistoryResponse(BaseModel):
     aggregates: List[PerformanceAggregateRead] = Field(default_factory=list, description="Historical aggregates")
     period_type: str = Field(..., description="Aggregation period type")
     total_count: int = Field(0, description="Total matching records")
+
+
+# ---------------------------------------------------------------------------
+# Tool Plugin Binding Schemas
+# ---------------------------------------------------------------------------
+
+
+class PluginId(str, Enum):
+    """Supported plugin identifiers for tool plugin bindings."""
+
+    OUTPUT_LENGTH_GUARD = "OUTPUT_LENGTH_GUARD"
+    RATE_LIMITER = "RATE_LIMITER"
+    SECRETS_DETECTION = "SECRETS_DETECTION"
+
+
+# Maps PluginId enum values (stored in DB) to plugin class names used by the
+# plugin framework's PluginConfigOverride.name field.
+PLUGIN_ID_TO_NAME: dict[str, str] = {
+    PluginId.OUTPUT_LENGTH_GUARD: "OutputLengthGuardPlugin",
+    PluginId.RATE_LIMITER: "RateLimiterPlugin",
+    PluginId.SECRETS_DETECTION: "SecretsDetection",
+}
+
+
+class PluginBindingMode(str, Enum):
+    """Plugin execution mode for tool plugin bindings."""
+
+    ENFORCE = "enforce"
+    PERMISSIVE = "permissive"
+    DISABLED = "disabled"
+
+
+# --- Plugin-specific config schemas ---
+
+
+class OutputLengthGuardConfig(BaseModel):
+    """Config schema for OUTPUT_LENGTH_GUARD plugin.
+
+    Attributes:
+        min_chars: Minimum character count (>= 0).
+        max_chars: Maximum character count. None disables the check.
+        min_tokens: Minimum token count (0 disables).
+        max_tokens: Maximum token count. None disables the check.
+        chars_per_token: Characters per token ratio for estimation (1-10).
+        limit_mode: Enforcement mode — 'character' or 'token'.
+        strategy: What to do when limit is exceeded.
+        ellipsis: Suffix appended when truncating.
+        word_boundary: Truncate at word boundaries to avoid mid-word cuts.
+        max_text_length: Maximum text size to process (bytes). Prevents memory exhaustion.
+        max_structure_size: Maximum items in list/dict. Prevents DoS attacks.
+        max_recursion_depth: Maximum nesting depth. Prevents stack overflow.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_chars: int = Field(default=0, ge=0, description="Minimum character count, must be >= 0")
+    max_chars: Optional[int] = Field(default=None, description="Maximum character count; None or 0 disables the check")
+    min_tokens: int = Field(default=0, ge=0, description="Minimum token count; 0 disables")
+    max_tokens: Optional[int] = Field(default=None, description="Maximum token count; None or 0 disables")
+    chars_per_token: int = Field(default=4, ge=1, le=10, description="Characters per token ratio for estimation")
+    limit_mode: Literal["character", "token"] = Field(default="character", description="Enforcement mode: 'character' or 'token'")
+    strategy: Literal["truncate", "block"] = Field(default="truncate", description="Action when limit exceeded")
+    ellipsis: str = Field(default="\u2026", max_length=20, description="Suffix appended on truncation")
+    word_boundary: bool = Field(default=False, description="Truncate at word boundaries to avoid mid-word cuts")
+    max_text_length: int = Field(default=1_000_000, ge=1, description="Maximum text size to process; prevents memory exhaustion")
+    max_structure_size: int = Field(default=10_000, ge=1, description="Maximum items in list/dict; prevents DoS")
+    max_recursion_depth: int = Field(default=100, ge=1, description="Maximum nesting depth; prevents stack overflow")
+
+    @model_validator(mode="after")
+    def min_less_than_max(self) -> "OutputLengthGuardConfig":
+        """Validate min < max for both chars and tokens when the max is set.
+
+        Returns:
+            self after validation.
+
+        Raises:
+            ValueError: If min_chars >= max_chars or min_tokens >= max_tokens.
+        """
+        if self.max_chars is not None and self.max_chars > 0 and self.min_chars >= self.max_chars:
+            raise ValueError("min_chars must be less than max_chars")
+        if self.max_tokens is not None and self.max_tokens > 0 and self.min_tokens >= self.max_tokens:
+            raise ValueError("min_tokens must be less than max_tokens")
+        return self
+
+
+class RateLimiterConfig(BaseModel):
+    """Config schema for RATE_LIMITER plugin.
+
+    Rate strings use the format ``<count>/<period>`` where period is
+    ``s`` (second) or ``m`` (minute), e.g. ``60/m``, ``10/s``.
+
+    Attributes:
+        by_user: Rate limit per user.
+        by_tenant: Rate limit per tenant.
+        by_tool: Per-tool rate limits as a dict of tool_name to rate string.
+        algorithm: Counting algorithm.
+        backend: Storage backend.
+        redis_url: Redis connection URL (required when backend='redis').
+        redis_key_prefix: Prefix for all Redis keys.
+        redis_fallback: Fall back to memory if Redis is unavailable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    by_user: Optional[str] = Field(default=None, description="Rate limit per user, e.g. '60/m' or '10/s'; null disables")
+    by_tenant: Optional[str] = Field(default=None, description="Rate limit per tenant, e.g. '600/m'; null disables")
+    by_tool: Optional[Dict[str, str]] = Field(default=None, description="Per-tool rate limits, e.g. {'search': '10/m'}; null disables")
+    algorithm: Literal["fixed_window", "sliding_window", "token_bucket"] = Field(default="fixed_window", description="Counting algorithm")
+    backend: Literal["memory", "redis"] = Field(default="memory", description="Storage backend")
+    redis_url: Optional[str] = Field(default=None, description="Redis URL, e.g. 'redis://localhost:6379/0'; required when backend='redis', null otherwise")
+    redis_key_prefix: str = Field(default="rl", description="Prefix for all Redis keys")
+    redis_fallback: bool = Field(default=True, description="Fall back to memory if Redis is unavailable")
+
+    @field_validator("by_user", "by_tenant", mode="before")
+    @classmethod
+    def validate_rate_string(cls, v: Optional[str]) -> Optional[str]:
+        """Validate rate string format <count>/<s|m>.
+
+        Args:
+            v: Rate string to validate.
+
+        Returns:
+            Validated rate string or None.
+
+        Raises:
+            ValueError: If format is invalid.
+        """
+        if v is None:
+            return v
+        if not re.match(r"^\d+/[sm]$", v):
+            raise ValueError(f"Rate string '{v}' is invalid. Use format '<count>/s' or '<count>/m'")
+        return v
+
+    @field_validator("by_tool", mode="before")
+    @classmethod
+    def validate_by_tool_rate_strings(cls, v: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        """Validate each per-tool rate string.
+
+        Args:
+            v: Dict of tool_name to rate string.
+
+        Returns:
+            Validated dict or None.
+
+        Raises:
+            ValueError: If any rate string is invalid.
+        """
+        if v is None:
+            return v
+        for tool_name, rate in v.items():
+            if not re.match(r"^\d+/[sm]$", rate):
+                raise ValueError(f"Rate string '{rate}' for tool '{tool_name}' is invalid. Use format '<count>/s' or '<count>/m'")
+        return v
+
+
+class SecretsDetectionConfig(BaseModel):
+    """Config schema for SECRETS_DETECTION plugin.
+
+    Attributes:
+        enabled: Map of pattern names to whether they are active.
+        redact: Whether to redact detected secrets from output.
+        redaction_text: Text used to replace redacted secrets.
+        block_on_detection: Whether to block the response when secrets are found.
+        min_findings_to_block: Minimum number of findings required to trigger a block.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Dict[str, bool] = Field(default_factory=dict, description="Map of pattern names to enabled flag, e.g. {'aws_key': true}")
+    redact: bool = Field(default=True, description="Whether to redact detected secrets")
+    redaction_text: str = Field(default="[REDACTED]", max_length=50, description="Text to replace secrets with when redacting")
+    block_on_detection: bool = Field(default=False, description="Whether to block the response when secrets are detected")
+    min_findings_to_block: int = Field(default=1, ge=1, description="Minimum number of findings required to block")
+
+
+# Map of plugin_id → config schema class for validation
+_PLUGIN_CONFIG_MAP: Dict[str, type] = {
+    PluginId.OUTPUT_LENGTH_GUARD: OutputLengthGuardConfig,
+    PluginId.RATE_LIMITER: RateLimiterConfig,
+    PluginId.SECRETS_DETECTION: SecretsDetectionConfig,
+}
+
+
+# --- Policy item (one plugin, one or more tools) ---
+
+
+class PluginPolicyItem(BaseModel):
+    """A single plugin policy entry within a team's binding payload.
+
+    Attributes:
+        tool_names: List of tool names this policy applies to. Use ``["*"]`` for all tools.
+        plugin_id: The plugin to bind.
+        mode: Execution mode.
+        priority: Execution order — lower numbers run first.
+        config: Plugin-specific configuration.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_names: List[str] = Field(..., min_length=1, description="Tool names to apply the policy to; use ['*'] for all tools in the team")
+    plugin_id: PluginId = Field(..., description="Plugin to bind")
+    mode: PluginBindingMode = Field(PluginBindingMode.ENFORCE, description="Execution mode: enforce, permissive, or disabled")
+    priority: int = Field(50, ge=1, le=1000, description="Execution priority; lower numbers run first")
+    config: Dict[str, Any] = Field(
+        ..., description="Plugin-specific configuration. All schema fields for the selected plugin must be provided — partial configs are rejected at validation time. On upsert the entire config is fully replaced; there is no merge with the previously stored config."
+    )
+    binding_reference_id: Optional[str] = Field(
+        None,
+        max_length=255,
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$",
+        description="Optional external reference ID for correlating this binding with an upstream system",
+    )
+
+    @model_validator(mode="after")
+    def validate_config_for_plugin(self) -> "PluginPolicyItem":
+        """Validate config against the schema for the selected plugin_id.
+
+        Returns:
+            self after validation.
+
+        Raises:
+            ValueError: If config is invalid for the chosen plugin.
+        """
+        config_cls = _PLUGIN_CONFIG_MAP.get(self.plugin_id)
+        if config_cls:
+            expected = set(config_cls.model_fields.keys())
+            provided = set(self.config.keys())
+            missing = expected - provided
+            if missing:
+                raise ValueError(f"Missing config fields for {self.plugin_id.value}: {sorted(missing)}")
+            try:
+                config_cls(**self.config)
+            except ValidationError as exc:
+                parts = []
+                for e in exc.errors():
+                    loc = ".".join(str(p) for p in e["loc"])
+                    parts.append(f"{loc}: {e['msg']}" if loc else e["msg"])
+                raise ValueError(f"Invalid {self.plugin_id.value} config: [{', '.join(parts)}]") from exc
+        return self
+
+
+# --- Per-team policies wrapper ---
+
+
+class TeamPolicies(BaseModel):
+    """Policies for a single team."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    policies: List[PluginPolicyItem] = Field(..., min_length=1, description="List of plugin policies for this team")
+
+
+# --- Top-level request body ---
+
+
+class ToolPluginBindingRequest(BaseModel):
+    """Request body for POST /v1/tools/plugin_bindings.
+
+    The payload is a dict keyed by team_id, each value being a ``TeamPolicies``
+    object.  Multiple teams can be configured in a single request.  If a
+    (team_id, tool_name, plugin_id) triple already exists the row is updated
+    in place (upsert); otherwise a new row is inserted.
+
+    Example::
+
+        {
+            "team_abc": {
+                "policies": [
+                    {
+                        "tool_names": ["tool_a", "tool_b"],
+                        "plugin_id": "OUTPUT_LENGTH_GUARD",
+                        "mode": "enforce",
+                        "priority": 10,
+                        "config": {"max_chars": 2000, "strategy": "truncate"}
+                    }
+                ]
+            }
+        }
+    """
+
+    teams: Dict[str, TeamPolicies] = Field(..., min_length=1, description="Map of team_id to its plugin policies")
+
+
+# --- Response schemas ---
+
+
+class ToolPluginBindingResponse(BaseModelWithConfigDict):
+    """A single tool plugin binding record returned from the API.
+
+    Attributes:
+        id: Unique binding identifier (UUID).
+        team_id: Team the binding belongs to.
+        tool_name: Tool name the policy applies to.
+        plugin_id: Plugin identifier.
+        mode: Execution mode.
+        priority: Execution priority.
+        config: Plugin-specific configuration.
+        created_at: Creation timestamp.
+        created_by: Email of creator.
+        updated_at: Last update timestamp.
+        updated_by: Email of last updater.
+    """
+
+    id: str = Field(..., description="Unique binding identifier")
+    team_id: str = Field(..., description="Team the binding belongs to")
+    tool_name: str = Field(..., description="Tool name the policy applies to")
+    plugin_id: str = Field(..., description="Plugin identifier")
+    mode: str = Field(..., description="Execution mode")
+    priority: int = Field(..., description="Execution priority")
+    config: Dict[str, Any] = Field(..., description="Plugin-specific configuration")
+    binding_reference_id: Optional[str] = Field(None, description="Optional external reference ID for correlating with an upstream system")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    created_by: str = Field(..., description="Email of creator")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+    updated_by: str = Field(..., description="Email of last updater")
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, v: datetime) -> str:
+        """Serialize datetime fields to ISO 8601.
+
+        Args:
+            v: Datetime to serialize.
+
+        Returns:
+            ISO 8601 string.
+        """
+        return encode_datetime(v)
+
+
+class ToolPluginBindingListResponse(BaseModelWithConfigDict):
+    """Response for GET /v1/tools/plugin_bindings[/{team_id}]."""
+
+    bindings: List[ToolPluginBindingResponse] = Field(default_factory=list, description="List of tool plugin bindings")
+    total: int = Field(0, description="Total number of bindings returned")

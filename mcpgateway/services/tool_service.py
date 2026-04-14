@@ -20,6 +20,7 @@ import base64
 import binascii
 from datetime import datetime, timezone
 from functools import lru_cache
+import logging
 import os
 import re
 import ssl
@@ -58,14 +59,12 @@ from mcpgateway.db import Gateway as DbGateway
 from mcpgateway.db import get_for_update, server_tool_association
 from mcpgateway.db import Tool as DbTool
 from mcpgateway.db import ToolMetric, ToolMetricsHourly
-from mcpgateway.observability import create_child_span, create_span, inject_trace_context_headers, set_span_attribute, set_span_error
+from mcpgateway.observability import create_child_span, create_span, inject_trace_context_headers, otel_context_active, set_span_attribute, set_span_error
 from mcpgateway.plugins.framework import (
-    get_plugin_manager,
     GlobalContext,
     HttpHeaderPayload,
     PluginContextTable,
     PluginError,
-    PluginManager,
     PluginViolationError,
     ToolHookType,
     ToolPostInvokePayload,
@@ -160,6 +159,14 @@ _SENSITIVE_TOOL_HEADER_PATTERNS = (
     # non-secret tracing/idempotency headers (e.g. X-Correlation-Token).
     re.compile(r"^x-(?:auth|api|access|refresh|client|bearer|session|security)[-_]?(?:token|secret|key)$", re.IGNORECASE),
     re.compile(r"^(?:auth|api|access|refresh|client|bearer|session|security)[-_]?(?:token|secret|key)$", re.IGNORECASE),
+    # Protocol-level and credential-bearing headers that must not be set via mapping.
+    re.compile(r"^cookie$", re.IGNORECASE),
+    re.compile(r"^set-cookie$", re.IGNORECASE),
+    re.compile(r"^host$", re.IGNORECASE),
+    re.compile(r"^transfer-encoding$", re.IGNORECASE),
+    re.compile(r"^content-length$", re.IGNORECASE),
+    re.compile(r"^connection$", re.IGNORECASE),
+    re.compile(r"^upgrade$", re.IGNORECASE),
 )
 
 
@@ -440,6 +447,66 @@ def extract_using_jq(data, jq_filter=""):
     return result
 
 
+_VALID_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$")
+
+
+_INVALID_HEADER_VALUE_CHARS = re.compile(r"[\r\n\x00]")
+
+
+def _validate_mapping_contents(mapping: dict, label: str, tool_name: str) -> dict[str, str]:
+    """Validate that a mapping dict contains only string keys and string values.
+
+    Raises:
+        ToolInvocationError: If the mapping contains non-string keys or values.
+    """
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        raise ToolInvocationError(f"Tool '{tool_name}' has invalid {label}: non-string keys or values. Check the tool's {label} configuration.")
+    return mapping
+
+
+def _validate_header_mapping_targets(mapping: dict[str, str], tool_name: str) -> None:
+    """Validate that header mapping target names are safe and well-formed.
+
+    Raises:
+        ToolInvocationError: If any target header name is sensitive or malformed.
+    """
+    for target_header in mapping.values():
+        if _is_sensitive_tool_header_name(target_header):
+            raise ToolInvocationError(f"header_mapping for tool '{tool_name}' targets sensitive header {repr(target_header[:64])}")
+        if not _VALID_HTTP_HEADER_NAME.match(target_header):
+            raise ToolInvocationError(f"header_mapping for tool '{tool_name}' contains invalid header name {repr(target_header[:64])}")
+
+
+def apply_mapping_into_target(data_obj: dict, mapping_obj: dict | None, target_obj: dict | None = None) -> dict:
+    """Map fields from data_obj whose keys appear in mapping_obj, renaming them per mapping_obj's values, and merge into target_obj.
+
+    Only data_obj keys present in mapping_obj are included; unmapped keys are excluded from the result.
+    If mapping_obj is None or empty, returns target_obj unchanged.
+    If no target_obj is provided, an empty dict is used as the base.
+
+    Args:
+        data_obj: Source data whose keys may be mapped.
+        mapping_obj: Key-renaming map (old_key -> new_key), or None/empty to skip mapping.
+        target_obj: Base dict to merge mapped entries into. Mapped entries overwrite on collision.
+
+    Returns:
+        A new dict containing all entries from target_obj plus renamed entries from data_obj.
+    """
+
+    if target_obj is None:
+        target_obj = {}
+
+    if not mapping_obj:
+        return target_obj
+
+    if logger.isEnabledFor(logging.DEBUG):
+        dropped = {k for k in data_obj if k not in mapping_obj}
+        if dropped:
+            structured_logger.log(level="DEBUG", message=f"apply_mapping_into_target: unmapped keys excluded: {sorted(dropped)}", component="tool_service")
+
+    return {**target_obj, **{mapping_obj[k]: v for k, v in data_obj.items() if k in mapping_obj}}
+
+
 class ToolError(Exception):
     """Base class for tool-related errors.
 
@@ -564,6 +631,77 @@ class ToolTimeoutError(ToolInvocationError):
         self.retry_delay_ms = retry_delay_ms
 
 
+def _coerce_retry_policy_int(raw_value: Any, *, default: int, minimum: int) -> int:
+    """Normalize retry policy integer settings from plugin config."""
+    if raw_value is None:
+        return default
+    value = int(raw_value)
+    if value < minimum:
+        raise ValueError(f"Retry policy integer must be >= {minimum}")
+    return value
+
+
+def _coerce_retry_policy_statuses(raw_value: Any) -> List[int]:
+    """Normalize retryable status codes from plugin config."""
+    if raw_value is None:
+        return [429, 500, 502, 503, 504]
+    if isinstance(raw_value, (str, bytes)) or not isinstance(raw_value, (list, tuple, set)):
+        raise ValueError("Retry policy retry_on_status must be a sequence of integers")
+    return [int(code) for code in raw_value]
+
+
+def _coerce_retry_policy_bool(raw_value: Any, *, default: bool) -> bool:
+    """Normalize retry policy booleans using explicit string parsing."""
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)) and raw_value in (0, 1):
+        return bool(raw_value)
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    raise ValueError("Retry policy boolean must be a bool-like value")
+
+
+def _build_retry_policy_config(raw_cfg: Optional[Dict[str, Any]], tool_name: str) -> Dict[str, Any]:
+    """Build a gateway-owned retry policy view from plugin config."""
+    cfg = raw_cfg or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("Retry policy config must be a mapping")
+    effective_cfg: Dict[str, Any] = {
+        "max_retries": _coerce_retry_policy_int(cfg.get("max_retries"), default=2, minimum=0),
+        "backoff_base_ms": _coerce_retry_policy_int(cfg.get("backoff_base_ms"), default=200, minimum=1),
+        "max_backoff_ms": _coerce_retry_policy_int(cfg.get("max_backoff_ms"), default=5000, minimum=1),
+        "retry_on_status": _coerce_retry_policy_statuses(cfg.get("retry_on_status")),
+        "jitter": _coerce_retry_policy_bool(cfg.get("jitter"), default=True),
+        "check_text_content": _coerce_retry_policy_bool(cfg.get("check_text_content"), default=False),
+    }
+
+    tool_overrides = cfg.get("tool_overrides") or {}
+    if not isinstance(tool_overrides, dict):
+        raise ValueError("Retry policy tool_overrides must be a mapping")
+
+    overrides = tool_overrides.get(tool_name)
+    if overrides:
+        if not isinstance(overrides, dict):
+            raise ValueError("Retry policy tool override must be a mapping")
+        effective_cfg.update({key: value for key, value in overrides.items() if key in effective_cfg})
+        effective_cfg["max_retries"] = _coerce_retry_policy_int(effective_cfg.get("max_retries"), default=2, minimum=0)
+        effective_cfg["backoff_base_ms"] = _coerce_retry_policy_int(effective_cfg.get("backoff_base_ms"), default=200, minimum=1)
+        effective_cfg["max_backoff_ms"] = _coerce_retry_policy_int(effective_cfg.get("max_backoff_ms"), default=5000, minimum=1)
+        effective_cfg["retry_on_status"] = _coerce_retry_policy_statuses(effective_cfg.get("retry_on_status"))
+        effective_cfg["jitter"] = _coerce_retry_policy_bool(effective_cfg.get("jitter"), default=True)
+        effective_cfg["check_text_content"] = _coerce_retry_policy_bool(effective_cfg.get("check_text_content"), default=False)
+
+    effective_cfg["max_retries"] = min(effective_cfg["max_retries"], settings.max_tool_retries)
+
+    return effective_cfg
+
+
 class ToolService(BaseService):
     """Service for managing and invoking tools.
 
@@ -590,7 +728,6 @@ class ToolService(BaseService):
         """
         self._event_service = EventService(channel_name="mcpgateway:tool_events")
         self._http_client = ResilientHttpClient(client_args={"timeout": settings.federation_timeout, "verify": not settings.skip_ssl_verify})
-        self._plugin_manager: PluginManager | None = get_plugin_manager()
         self.oauth_manager = OAuthManager(
             request_timeout=int(settings.oauth_request_timeout if hasattr(settings, "oauth_request_timeout") else 30),
             max_retries=int(settings.oauth_max_retries if hasattr(settings, "oauth_max_retries") else 3),
@@ -656,7 +793,7 @@ class ToolService(BaseService):
 
         # Use combined query that includes both raw metrics and rollup data
         results = get_top_performers_combined(
-            db=db,
+            db,
             metric_type="tool",
             entity_model=DbTool,
             limit=effective_limit,
@@ -705,6 +842,8 @@ class ToolService(BaseService):
             "team_id": tool.team_id,
             "owner_email": tool.owner_email,
             "visibility": tool.visibility,
+            "query_mapping": tool.query_mapping,
+            "header_mapping": tool.header_mapping,
         }
 
         gateway_payload = None
@@ -1508,7 +1647,7 @@ class ToolService(BaseService):
         for chunk_start in range(0, len(tools), chunk_size):
             chunk = tools[chunk_start : chunk_start + chunk_size]
             chunk_stats = self._process_tool_chunk(
-                db=db,
+                db,
                 chunk=chunk,
                 conflict_strategy=conflict_strategy,
                 visibility=visibility,
@@ -2013,7 +2152,7 @@ class ToolService(BaseService):
 
             # Use unified pagination helper - handles both page and cursor pagination
             pag_result = await unified_paginate(
-                db=db,
+                db,
                 query=query,
                 page=page,
                 per_page=per_page,
@@ -2864,7 +3003,7 @@ class ToolService(BaseService):
             # Look up the tool's original_name from the DB; fall back to the prefixed name if not found
             # (e.g. when calling a tool that exists on the remote but hasn't been cached locally).
             remote_name = name
-            tool_row = db.execute(select(DbTool).where(DbTool.name == name, DbTool.gateway_id == gateway_id)).scalar_one_or_none()
+            tool_row = db.execute(select(DbTool).where(DbTool.name == name, DbTool.gateway_id == gateway_id)).scalar_one_or_none()  # pylint: disable=comparison-with-callable
             if tool_row and tool_row.original_name:
                 remote_name = tool_row.original_name
             else:
@@ -2974,8 +3113,6 @@ class ToolService(BaseService):
             ToolNotFoundError: If the requested tool is not visible or invocable.
             ToolInvocationError: If gateway auth preparation fails or the tool name is ambiguous.
         """
-        has_pre_invoke = self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE)
-        has_post_invoke = self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE)
 
         gateway_id_from_header = extract_gateway_id_from_headers(request_headers)
         is_direct_proxy = False
@@ -3120,6 +3257,17 @@ class ToolService(BaseService):
         tool_timeout_ms = tool_payload.get("timeout_ms")
         effective_timeout = (tool_timeout_ms / 1000) if tool_timeout_ms else settings.tool_timeout
 
+        # Resolve per-tool context_id for plugin manager (same pattern as invoke_tool)
+        # First-Party
+        from mcpgateway.plugins.gateway_plugin_manager import make_context_id  # pylint: disable=import-outside-toplevel
+
+        _tool_team_id = tool_payload.get("team_id")
+        _binding_tool_name = tool_payload.get("original_name") or name
+        plugin_context_id = make_context_id(str(_tool_team_id), _binding_tool_name) if _tool_team_id else server_id
+        plugin_manager = await self._get_plugin_manager(plugin_context_id)
+        has_pre_invoke = plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE)
+        has_post_invoke = plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE)
+
         has_gateway = gateway_payload is not None
         gateway_url = gateway_payload.get("url") if has_gateway else None
         gateway_name = gateway_payload.get("name") if has_gateway else None
@@ -3232,11 +3380,12 @@ class ToolService(BaseService):
                 plugin_global_context=plugin_global_context,
                 tool_payload=tool_payload,
                 gateway_payload=gateway_payload,
+                request_headers=request_headers,
             )
 
         native_post_invoke_retry_policy = None
         if has_post_invoke:
-            native_post_invoke_retry_policy, requires_python_fallback = self._build_rust_native_tool_post_invoke_retry_policy(name, hook_global_context)
+            native_post_invoke_retry_policy, requires_python_fallback = self._build_rust_native_tool_post_invoke_retry_policy(plugin_manager, name, hook_global_context)
             if requires_python_fallback:
                 return {"eligible": False, "fallbackReason": "post-invoke-hooks-configured"}
 
@@ -3244,7 +3393,7 @@ class ToolService(BaseService):
         # inject credentials and clean arguments before the Rust direct call.
         modified_args = arguments
         if has_pre_invoke and arguments is not None:
-            pre_result, _ = await self._plugin_manager.invoke_hook(
+            pre_result, _ = await plugin_manager.invoke_hook(
                 ToolHookType.TOOL_PRE_INVOKE,
                 payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=dict(runtime_headers))),
                 global_context=hook_global_context,
@@ -3292,6 +3441,7 @@ class ToolService(BaseService):
         plugin_global_context: Optional[GlobalContext],
         tool_payload: Optional[Dict[str, Any]],
         gateway_payload: Optional[Dict[str, Any]],
+        request_headers: Optional[Dict[str, str]] = None,
     ) -> GlobalContext:
         """Build plugin global context for Rust-direct tool plan resolution.
 
@@ -3302,6 +3452,7 @@ class ToolService(BaseService):
             plugin_global_context: Existing middleware context if available.
             tool_payload: Resolved tool payload.
             gateway_payload: Resolved gateway payload.
+            request_headers: Request headers for extracting content type.
 
         Returns:
             GlobalContext primed with the same metadata the Python invoke path exposes.
@@ -3315,7 +3466,8 @@ class ToolService(BaseService):
         else:
             request_id = get_correlation_id() or uuid.uuid4().hex
             context_server_id = tool_gateway_id if tool_gateway_id and isinstance(tool_gateway_id, str) else server_id
-            hook_global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=None, user=app_user_email)
+            content_type = request_headers.get("content-type") if request_headers else None
+            hook_global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=None, user=app_user_email, content_type=content_type)
 
         tool_metadata: Optional[PydanticTool] = self._pydantic_tool_from_payload(tool_payload) if tool_payload else None
         gateway_metadata: Optional[PydanticGateway] = self._pydantic_gateway_from_payload(gateway_payload) if gateway_payload else None
@@ -3327,6 +3479,7 @@ class ToolService(BaseService):
 
     def _build_rust_native_tool_post_invoke_retry_policy(
         self,
+        plugin_manager: Optional[Any],
         tool_name: str,
         hook_global_context: Optional[GlobalContext],
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -3337,25 +3490,23 @@ class ToolService(BaseService):
         hook must still force the call back to Python to preserve plugin semantics.
 
         Args:
+            plugin_manager: Plugin manager instance (may be None).
             tool_name: Requested tool name.
             hook_global_context: Resolved plugin context for condition matching.
 
         Returns:
             Tuple of `(policy, requires_python_fallback)`.
         """
-        if not self._plugin_manager or not self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+        if not plugin_manager or not plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
             return (None, False)
 
         # First-Party
         from mcpgateway.plugins.framework import PluginMode  # pylint: disable=import-outside-toplevel
         from mcpgateway.plugins.framework.utils import payload_matches  # pylint: disable=import-outside-toplevel
 
-        # Third-Party/Local
-        from plugins.retry_with_backoff.retry_with_backoff import RetryConfig  # pylint: disable=import-outside-toplevel
-
         global_context = hook_global_context or GlobalContext(request_id=get_correlation_id() or uuid.uuid4().hex)
         payload = ToolPostInvokePayload(name=tool_name, result={})
-        hook_refs = self._plugin_manager._registry.get_hook_refs_for_hook(hook_type=ToolHookType.TOOL_POST_INVOKE)  # pylint: disable=protected-access
+        hook_refs = plugin_manager._registry.get_hook_refs_for_hook(hook_type=ToolHookType.TOOL_POST_INVOKE)  # pylint: disable=protected-access
 
         active_hook_refs = []
         for hook_ref in hook_refs:
@@ -3372,31 +3523,22 @@ class ToolService(BaseService):
             return (None, True)
 
         retry_hook = active_hook_refs[0]
-        effective_cfg = RetryConfig(**(retry_hook.plugin_ref.plugin.config.config or {}))
-        ceiling = settings.max_tool_retries
-        if effective_cfg.max_retries > ceiling:
-            effective_cfg = effective_cfg.model_copy(update={"max_retries": ceiling})
+        try:
+            effective_cfg = _build_retry_policy_config(retry_hook.plugin_ref.plugin.config.config or {}, tool_name)
+        except (TypeError, ValueError):
+            return (None, True)
 
-        overrides = effective_cfg.tool_overrides.get(tool_name)
-        if overrides:
-            merged_cfg = effective_cfg.model_dump()
-            merged_cfg.update(overrides)
-            merged_cfg.pop("tool_overrides", None)
-            effective_cfg = RetryConfig(**merged_cfg)
-            if effective_cfg.max_retries > ceiling:
-                effective_cfg = effective_cfg.model_copy(update={"max_retries": ceiling})
-
-        if effective_cfg.check_text_content:
+        if effective_cfg["check_text_content"]:
             return (None, True)
 
         return (
             {
                 "kind": "retry_with_backoff",
-                "maxRetries": int(effective_cfg.max_retries),
-                "backoffBaseMs": int(effective_cfg.backoff_base_ms),
-                "maxBackoffMs": int(effective_cfg.max_backoff_ms),
-                "retryOnStatus": list(effective_cfg.retry_on_status),
-                "jitter": bool(effective_cfg.jitter),
+                "maxRetries": effective_cfg["max_retries"],
+                "backoffBaseMs": effective_cfg["backoff_base_ms"],
+                "maxBackoffMs": effective_cfg["max_backoff_ms"],
+                "retryOnStatus": effective_cfg["retry_on_status"],
+                "jitter": effective_cfg["jitter"],
             },
             False,
         )
@@ -3412,7 +3554,7 @@ class ToolService(BaseService):
         Returns:
             A list of candidate tool ORM rows matching the request.
         """
-        query = select(DbTool).options(joinedload(DbTool.gateway)).where(DbTool.name == name)
+        query = select(DbTool).options(joinedload(DbTool.gateway)).where(DbTool.name == name)  # pylint: disable=comparison-with-callable
         if server_id:
             query = query.join(server_tool_association, DbTool.id == server_tool_association.c.tool_id).where(server_tool_association.c.server_id == server_id)
         return db.execute(query).scalars().all()
@@ -3427,6 +3569,7 @@ class ToolService(BaseService):
         effective_timeout: float,
         global_context: Any,
         context_table: Any,
+        plugin_manager: Any = None,
     ) -> None:
         """Invoke post-invoke plugins after a timeout and raise with retry signal if requested.
 
@@ -3441,6 +3584,7 @@ class ToolService(BaseService):
             effective_timeout: Timeout duration in seconds.
             global_context: Plugin global context for cross-hook state.
             context_table: Plugin local context table for per-plugin state.
+            plugin_manager: Optional pre-fetched plugin manager to avoid redundant lookups.
 
         Raises:
             ToolTimeoutError: When the retry plugin requests a delayed retry.
@@ -3449,12 +3593,9 @@ class ToolService(BaseService):
             for ctx in context_table.values():
                 ctx.set_state("cb_timeout_failure", True)
 
-        if not self._plugin_manager:
-            return
-
-        if self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+        if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
             timeout_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation timed out after {effective_timeout}s")], is_error=True)
-            timeout_post_result, _ = await self._plugin_manager.invoke_hook(
+            timeout_post_result, _ = await plugin_manager.invoke_hook(
                 ToolHookType.TOOL_POST_INVOKE,
                 payload=ToolPostInvokePayload(name=name, result=timeout_error_result.model_dump(by_alias=True)),
                 global_context=global_context,
@@ -3791,6 +3932,12 @@ class ToolService(BaseService):
             if isinstance(runtime_tool_oauth_config, dict):
                 tool_oauth_config = runtime_tool_oauth_config
         tool_gateway_id = tool_payload.get("gateway_id")
+        tool_query_mapping = tool_payload.get("query_mapping") if isinstance(tool_payload.get("query_mapping"), dict) else None
+        if tool_query_mapping is not None:
+            tool_query_mapping = _validate_mapping_contents(tool_query_mapping, "query_mapping", name)
+        tool_header_mapping = tool_payload.get("header_mapping") if isinstance(tool_payload.get("header_mapping"), dict) else None
+        if tool_header_mapping is not None:
+            tool_header_mapping = _validate_mapping_contents(tool_header_mapping, "header_mapping", name)
 
         # Get effective timeout: per-tool timeout_ms (in seconds) or global fallback
         # timeout_ms is stored in milliseconds, convert to seconds
@@ -3875,7 +4022,20 @@ class ToolService(BaseService):
         # This prevents lazy loading during HTTP calls
         tool_metadata: Optional[PydanticTool] = None
         gateway_metadata: Optional[PydanticGateway] = None
-        if self._plugin_manager:
+        # Resolve per-tool context_id so DB plugin bindings (ToolPluginBinding) are applied.
+        # Lazy import avoids circular: gateway_plugin_manager → services.__init__ → tool_service.
+        # First-Party
+        from mcpgateway.plugins.gateway_plugin_manager import make_context_id  # pylint: disable=import-outside-toplevel
+
+        _tool_team_id = tool_payload.get("team_id")
+        # Use original_name (the MCP server's tool name, e.g. "echo_text") as the binding key,
+        # not the gateway-prefixed display name (e.g. "plugin-tools-echo_text").
+        # Users create bindings against the original name they see in the MCP server.
+        _binding_tool_name = tool_payload.get("original_name") or name
+        plugin_context_id = make_context_id(str(_tool_team_id), _binding_tool_name) if _tool_team_id else server_id
+        plugin_manager = await self._get_plugin_manager(plugin_context_id)
+        logger.debug("invoke_tool: plugin_context_id=%r plugin_manager=%r", plugin_context_id, plugin_manager)
+        if plugin_manager:
             if tool is not None:
                 tool_metadata = PydanticTool.model_validate(tool)
                 if has_gateway and gateway is not None:
@@ -3951,7 +4111,8 @@ class ToolService(BaseService):
             # Use correlation ID from context if available, otherwise generate new one
             request_id = get_correlation_id() or uuid.uuid4().hex
             context_server_id = tool_gateway_id if tool_gateway_id and isinstance(tool_gateway_id, str) else "unknown"
-            global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=None, user=app_user_email)
+            content_type = request_headers.get("content-type") if request_headers else None
+            global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=None, user=app_user_email, content_type=content_type)
 
         start_time = time.monotonic()
         success = False
@@ -3968,28 +4129,24 @@ class ToolService(BaseService):
         # Create database span for observability_spans table
         if trace_id and observability_service:
             try:
-                # Re-open database session for span creation (original was closed at line 2285)
-                # Use commit=False since fresh_db_session() handles commits on exit
-                with fresh_db_session() as span_db:
-                    db_span_id = observability_service.start_span(
-                        db=span_db,
-                        trace_id=trace_id,
-                        name="tool.invoke",
-                        kind="client",
-                        resource_type="tool",
-                        resource_name=name,
-                        resource_id=tool_id,
-                        attributes={
-                            "tool.name": name,
-                            "tool.id": tool_id,
-                            "tool.integration_type": tool_integration_type,
-                            "tool.gateway_id": tool_gateway_id,
-                            "arguments_count": len(arguments) if arguments else 0,
-                            "has_headers": bool(request_headers),
-                        },
-                        commit=False,
-                    )
-                    logger.debug(f"✓ Created tool.invoke span: {db_span_id} for tool: {name}")
+                # start_span creates its own independent session (issue #3883)
+                db_span_id = observability_service.start_span(
+                    trace_id=trace_id,
+                    name="tool.invoke",
+                    kind="client",
+                    resource_type="tool",
+                    resource_name=name,
+                    resource_id=tool_id,
+                    attributes={
+                        "tool.name": name,
+                        "tool.id": tool_id,
+                        "tool.integration_type": tool_integration_type,
+                        "tool.gateway_id": tool_gateway_id,
+                        "arguments_count": len(arguments) if arguments else 0,
+                        "has_headers": bool(request_headers),
+                    },
+                )
+                logger.debug(f"✓ Created tool.invoke span: {db_span_id} for tool: {name}")
             except Exception as e:
                 logger.warning(f"Failed to start observability span for tool invocation: {e}")
                 db_span_id = None
@@ -4063,11 +4220,11 @@ class ToolService(BaseService):
                             session_short = mcp_session_id[:8] if len(mcp_session_id) >= 8 else mcp_session_id
                             logger.debug(f"[AFFINITY] Worker {worker_id} | Session {session_short}... | Tool: {name} | Normalized MCP-Session-Id → x-mcp-session-id for pool affinity")
 
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         # Use pre-created Pydantic model from Phase 2 (no ORM access)
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -4084,10 +4241,10 @@ class ToolService(BaseService):
                     # Build the payload based on integration type
                     payload = arguments.copy()
 
-                    # Handle URL path parameter substitution (using local variable)
+                    # Handle URL path and query parameter substitution (using local variable)
                     final_url = tool_url
                     if "{" in tool_url and "}" in tool_url:
-                        # Extract path parameters from URL template and arguments
+                        # Extract ALL parameters (path and query) from URL template
                         url_params = re.findall(r"\{(\w+)\}", tool_url)
                         url_substitutions = {}
 
@@ -4098,14 +4255,30 @@ class ToolService(BaseService):
                             else:
                                 raise ToolInvocationError(f"Required URL parameter '{param}' not found in arguments")
 
-                    # --- Extract query params from URL ---
+                    # --- Extract query params from URL (after substitution) ---
                     parsed = urlparse(final_url)
                     final_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
                     query_params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
 
-                    # Merge leftover payload + query params
-                    payload.update(query_params)
+                    if tool_query_mapping:
+                        # Only mapped payload keys (renamed) are kept, merged on top of URL query params.
+                        # Unmapped payload keys are intentionally dropped (mapping acts as an allowlist).
+                        payload = apply_mapping_into_target(payload, tool_query_mapping, query_params)
+                        # Reject non-scalar values that would be inappropriate as query parameters.
+                        for qk, qv in payload.items():
+                            if isinstance(qv, (dict, list)):
+                                raise ToolInvocationError(f"Tool '{name}': query_mapping produced non-scalar value for parameter '{qk}'")
+
+                    # Headers are mapped from the original arguments (not the path-param-reduced payload)
+                    # to preserve all available data for header injection.
+                    if tool_header_mapping:
+                        _validate_header_mapping_targets(tool_header_mapping, name)
+                        headers = apply_mapping_into_target(arguments.copy(), tool_header_mapping, headers)
+                        # Reject header values containing CRLF or null bytes to prevent header injection.
+                        for hdr_name, hdr_val in headers.items():
+                            if isinstance(hdr_val, str) and _INVALID_HEADER_VALUE_CHARS.search(hdr_val):
+                                raise ToolInvocationError(f"Tool '{name}': header_mapping produced value with illegal characters for header '{hdr_name}'")
 
                     # Use the tool's request_type rather than defaulting to POST (using local variable)
                     method = tool_request_type.upper() if tool_request_type else "POST"
@@ -4113,8 +4286,15 @@ class ToolService(BaseService):
                         rest_start_time = time.time()
                         try:
                             if method == "GET":
+                                # For GET: merge extracted URL query params into payload; everything sent as query string
+                                if not tool_query_mapping:
+                                    payload.update(query_params)
                                 response = await asyncio.wait_for(self._http_client.get(final_url, params=payload, headers=headers), timeout=effective_timeout)
                             else:
+                                # For POST/PUT/PATCH/DELETE: merge query params into the JSON body
+                                # (preserves backward compatibility with existing tool configurations)
+                                if not tool_query_mapping:
+                                    payload.update(query_params)
                                 response = await asyncio.wait_for(self._http_client.request(method, final_url, json=payload, headers=headers), timeout=effective_timeout)
                         except (asyncio.TimeoutError, httpx.TimeoutException):
                             rest_elapsed_ms = (time.time() - rest_start_time) * 1000
@@ -4140,8 +4320,8 @@ class ToolService(BaseService):
                                     exc,
                                     exc_info=True,
                                 )
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if plugin_manager:
+                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table, plugin_manager)
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                         response.raise_for_status()
@@ -4373,6 +4553,7 @@ class ToolService(BaseService):
                         """
                         # Get correlation ID for distributed tracing
                         correlation_id = get_correlation_id()
+                        tracing_active = otel_context_active()
 
                         # NOTE: X-Correlation-ID is NOT added to headers for pooled sessions.
                         # MCP SDK pins headers at transport creation, so adding per-request headers
@@ -4397,7 +4578,7 @@ class ToolService(BaseService):
                             tool_call_result = None
                             use_pool = False
                             pool = None
-                            if settings.mcp_session_pool_enabled:
+                            if settings.mcp_session_pool_enabled and not tracing_active:
                                 try:
                                     pool = get_mcp_session_pool()
                                     use_pool = True
@@ -4511,8 +4692,8 @@ class ToolService(BaseService):
                                     exc_info=True,
                                 )
 
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if plugin_manager:
+                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table, plugin_manager)
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                         except BaseException as e:
@@ -4554,6 +4735,7 @@ class ToolService(BaseService):
                         """
                         # Get correlation ID for distributed tracing
                         correlation_id = get_correlation_id()
+                        tracing_active = otel_context_active()
 
                         # NOTE: X-Correlation-ID is NOT added to headers for pooled sessions.
                         # MCP SDK pins headers at transport creation, so adding per-request headers
@@ -4578,7 +4760,7 @@ class ToolService(BaseService):
                             tool_call_result = None
                             use_pool = False
                             pool = None
-                            if settings.mcp_session_pool_enabled:
+                            if settings.mcp_session_pool_enabled and not tracing_active:
                                 try:
                                     pool = get_mcp_session_pool()
                                     use_pool = True
@@ -4698,8 +4880,8 @@ class ToolService(BaseService):
                                     exc_info=True,
                                 )
 
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if plugin_manager:
+                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table, plugin_manager)
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                         except BaseException as e:
@@ -4727,13 +4909,14 @@ class ToolService(BaseService):
                     # REMOVED: Redundant gateway query - gateway already eager-loaded via joinedload
                     # tool_gateway = db.execute(select(DbGateway).where(DbGateway.id == tool_gateway_id)...)
 
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    plugin_manager = await self._get_plugin_manager(plugin_context_id)
+                    if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         # Use pre-created Pydantic models from Phase 2 (no ORM access)
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
                         if gateway_metadata:
                             global_context.metadata[GATEWAY_METADATA] = gateway_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -4779,10 +4962,11 @@ class ToolService(BaseService):
                     headers = {"Content-Type": "application/json"}
 
                     # Plugin hook: tool pre-invoke for A2A
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    plugin_manager = await self._get_plugin_manager(plugin_context_id)
+                    if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -4874,8 +5058,8 @@ class ToolService(BaseService):
                                 logger.debug("Failed to increment tool_timeout_counter for %s: %s", name, exc, exc_info=True)
 
                             # Trigger circuit breaker on timeout
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if plugin_manager:
+                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table, plugin_manager)
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
 
@@ -4898,8 +5082,9 @@ class ToolService(BaseService):
                 with create_child_span("tool.post_process", {"tool.name": name, "tool.id": tool_id}):
                     post_result = None
                     # Plugin hook: tool post-invoke
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
-                        post_result, _ = await self._plugin_manager.invoke_hook(
+                    plugin_manager = await self._get_plugin_manager(plugin_context_id)
+                    if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                        post_result, _ = await plugin_manager.invoke_hook(
                             ToolHookType.TOOL_POST_INVOKE,
                             payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)),
                             global_context=global_context,
@@ -4992,13 +5177,14 @@ class ToolService(BaseService):
                 # include it in structuredContent so the retry plugin can honour retry_on_status
                 # instead of blindly retrying every exception.
                 exc_post_result = None
-                if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                plugin_manager = await self._get_plugin_manager(plugin_context_id)
+                if plugin_manager and plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
                     try:
                         exc_structured: Optional[Dict[str, Any]] = None
                         if isinstance(root_cause, httpx.HTTPStatusError):
                             exc_structured = {"status_code": root_cause.response.status_code}
                         exception_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation failed: {error_message}")], is_error=True, structured_content=exc_structured)
-                        exc_post_result, _ = await self._plugin_manager.invoke_hook(
+                        exc_post_result, _ = await plugin_manager.invoke_hook(
                             ToolHookType.TOOL_POST_INVOKE,
                             payload=ToolPostInvokePayload(name=name, result=exception_error_result.model_dump(by_alias=True)),
                             global_context=global_context,
@@ -5035,23 +5221,20 @@ class ToolService(BaseService):
                 duration_ms = (time.monotonic() - start_time) * 1000
 
                 # End database span for observability_spans table
-                # Use commit=False since fresh_db_session() handles commits on exit
+                # end_span creates its own independent session (issue #3883)
                 if db_span_id and observability_service and not db_span_ended:
                     try:
-                        with fresh_db_session() as span_db:
-                            observability_service.end_span(
-                                db=span_db,
-                                span_id=db_span_id,
-                                status="ok" if success else "error",
-                                status_message=error_message if error_message else None,
-                                attributes={
-                                    "success": success,
-                                    "duration_ms": duration_ms,
-                                },
-                                commit=False,
-                            )
-                            db_span_ended = True
-                            logger.debug(f"✓ Ended tool.invoke span: {db_span_id}")
+                        observability_service.end_span(
+                            span_id=db_span_id,
+                            status="ok" if success else "error",
+                            status_message=error_message if error_message else None,
+                            attributes={
+                                "success": success,
+                                "duration_ms": duration_ms,
+                            },
+                        )
+                        db_span_ended = True
+                        logger.debug(f"✓ Ended tool.invoke span: {db_span_id}")
                     except Exception as e:
                         logger.warning(f"Failed to end observability span for tool invocation: {e}")
 
@@ -5892,7 +6075,7 @@ class ToolService(BaseService):
 
         # Update the tool
         return await self.update_tool(
-            db=db,
+            db,
             tool_id=tool.id,
             tool_update=tool_update,
             modified_by=modified_by,

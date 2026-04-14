@@ -155,9 +155,6 @@ python .github/tools/update_dependencies.py --file plugins/external/cedar/pyproj
 python .github/tools/update_dependencies.py --file plugins/external/llmguard/pyproject.toml
 python .github/tools/update_dependencies.py --file plugins/external/opa/pyproject.toml
 
-# Rust plugins (Python bindings)
-python .github/tools/update_dependencies.py --file plugins_rust/pyproject.toml
-
 # Requirements files
 python .github/tools/update_dependencies.py --file docs/requirements.txt
 python .github/tools/update_dependencies.py --file tests/load/requirements.txt
@@ -204,7 +201,6 @@ Update `Cargo.lock` files for all Rust crates and verify they build and pass tes
 
 ```bash
 # Update dependencies
-cd plugins_rust && cargo update && cd ..
 cd mcp-servers/rust/fast-test-server && cargo update && cd ../../..
 cd mcp-servers/rust/filesystem-server && cargo update && cd ../../..
 cd tools_rust/wrapper && cargo update && cd ../..
@@ -338,13 +334,12 @@ make autoflake isort black pre-commit
 ### 4.2 Python linters
 
 ```bash
-make flake8 ruff vulture bandit interrogate pylint verify
+make ruff vulture bandit interrogate pylint verify
 ```
 
 | Target | What it checks |
 |--------|----------------|
-| `flake8` | PEP 8 style violations (E3, E4, E7, E9, F, D1) |
-| `ruff` | Fast lint pass (overlaps flake8, catches additional patterns) |
+| `ruff` | PEP 8 style, pyflakes, docstrings, pylint rules (E3, E4, E7, E9, F, D1, D417, PL) |
 | `vulture` | Dead code detection (unused functions, variables, imports) |
 | `bandit` | Security vulnerabilities in Python code |
 | `interrogate` | Docstring coverage (must meet threshold) |
@@ -779,7 +774,7 @@ Edit `plugins/config.yaml` to set the PII filter plugin to enforce mode:
 
 ```yaml
 - name: "PIIFilterPlugin"
-  kind: "plugins.pii_filter.pii_filter.PIIFilterPlugin"
+  kind: "cpex_pii_filter.PIIFilterPlugin"
   mode: "enforce"  # Change from "disabled" to "enforce"
   priority: 50
   config:
@@ -1323,9 +1318,7 @@ make install-dev
 make pip-audit
 
 # 2. Rust / Go / JS / CDN dependency updates
-cd plugins_rust && cargo update && cd ..
 # ... repeat for all Cargo.toml dirs (see Section 3) ...
-make rust-check
 # ... go get -u ./... && go mod tidy for all go.mod dirs ...
 make linting-go-gosec linting-go-govulncheck
 npm update && npm audit && npm audit fix
@@ -1339,7 +1332,7 @@ make test
 
 # 4. Format, lint & security
 make autoflake isort black pre-commit
-make flake8 ruff vulture bandit interrogate pylint verify
+make ruff vulture bandit interrogate pylint verify
 make yamllint tomllint jsonlint
 make lint-web
 make dodgy gitleaks
