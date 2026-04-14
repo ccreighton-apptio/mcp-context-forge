@@ -170,16 +170,18 @@ make ocp-benchmark OCP_NS=<namespace> BENCH_USERS=500 BENCH_SPAWN=50     # heavy
 make ocp-benchmark OCP_NS=<namespace> BENCH_USERS=750 BENCH_SPAWN=75     # max throughput
 ```
 
-Scaling results (3 gateway pods, 3 NGINX, PGO Postgres, 3 Locust workers):
+Benchmark results (OCP Large, 3 gateway pods, 3 NGINX, PGO Postgres, 3 Locust workers):
 
-| Users | Spawn | RPS | Avg Latency | Med Latency | Failures |
-|-------|-------|-----|-------------|-------------|----------|
-| 125 | 30/s | 331 | 242ms | 110ms | 0% |
-| 300 | 30/s | 522 | 449ms | 210ms | 0% |
-| 500 | 50/s | 601 | 657ms | 320ms | 0% |
-| 750 | 75/s | 669 | 1,029ms | 480ms | 0% |
+> Results vary by cluster infrastructure (network topology, NFS performance, hypervisor density). The first benchmark run on a fresh deployment will show lower numbers as connection pools and caches warm up — run 2-3 times for stable results.
 
-500 users is the recommended setting for heavy load testing — best balance of throughput (601 RPS) and latency (320ms median) with 0% failures.
+| Users | Spawn | RPS | Avg Latency | Failures |
+|-------|-------|-----|-------------|----------|
+| 125 | 30/s | 262–331 | 242–357ms | 0% |
+| 300 | 30/s | 260–522 | 449–929ms | 0% |
+| 500 | 50/s | 328–601 | 657–1275ms | 0% |
+| 750 | 75/s | 300–669 | 1029–1888ms | 0–0.2% |
+
+500 users is the recommended setting for heavy load testing — best balance of throughput and latency with 0% failures across all tested clusters.
 
 **To uninstall and start over:**
 
