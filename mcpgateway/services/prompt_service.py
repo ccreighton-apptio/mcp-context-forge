@@ -963,7 +963,7 @@ class PromptService(BaseService):
         except ContentPatternError as cpe:
             db.rollback()
             # Sanitize pattern_matched to prevent log injection (CWE-117)
-            sanitized_pattern = cpe.pattern_matched.replace('\n', '\\n').replace('\r', '\\r')
+            sanitized_pattern = cpe.pattern_matched.replace("\n", "\\n").replace("\r", "\\r")
             logger.error(f"Malicious pattern detected in prompt template: {sanitized_pattern}")
             structured_logger.log(
                 level="ERROR",
@@ -2509,7 +2509,7 @@ class PromptService(BaseService):
         except ContentPatternError as cpe:
             db.rollback()
             # Sanitize pattern_matched to prevent log injection (CWE-117)
-            sanitized_pattern = cpe.pattern_matched.replace('\n', '\\n').replace('\r', '\\r')
+            sanitized_pattern = cpe.pattern_matched.replace("\n", "\\n").replace("\r", "\\r")
             logger.error(f"Malicious pattern detected in prompt template: {sanitized_pattern}")
             structured_logger.log(
                 level="ERROR",

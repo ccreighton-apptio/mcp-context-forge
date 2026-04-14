@@ -1403,7 +1403,7 @@ class ToolService(BaseService):
 
             if visibility is None:
                 visibility = tool.visibility or "public"
-            
+
             # Validate tool content for malicious patterns (CWE-20 fix - Issue #6)
             # Scan tool name, description, and inputSchema
             # Convert to string to handle both string and non-string inputs
@@ -1425,7 +1425,9 @@ class ToolService(BaseService):
                 # Convert inputSchema to string for pattern scanning
                 # Handle both dict objects and test mocks gracefully
                 try:
+                    # Standard
                     import json
+
                     schema_str = json.dumps(tool.input_schema)
                     self._content_security.detect_malicious_patterns(
                         content=schema_str,
@@ -1436,7 +1438,7 @@ class ToolService(BaseService):
                 except (TypeError, ValueError):
                     # Skip validation if schema is not JSON-serializable (e.g., test mocks)
                     pass
-            
+
             # Check for existing tool with the same name and visibility
             if visibility.lower() == "public":
                 # Check for existing public tool with the same name
@@ -5470,7 +5472,9 @@ class ToolService(BaseService):
                 # Convert inputSchema to string for pattern scanning
                 # Handle both dict objects and test mocks gracefully
                 try:
+                    # Standard
                     import json
+
                     schema_str = json.dumps(tool_update.input_schema)
                     self._content_security.detect_malicious_patterns(
                         content=schema_str,
@@ -5481,7 +5485,7 @@ class ToolService(BaseService):
                 except (TypeError, ValueError):
                     # Skip validation if schema is not JSON-serializable (e.g., test mocks)
                     pass
-            
+
             # Track whether a name change occurred (before tool.name is mutated)
             name_is_changing = bool(tool_update.name and tool_update.name != tool.name)
 

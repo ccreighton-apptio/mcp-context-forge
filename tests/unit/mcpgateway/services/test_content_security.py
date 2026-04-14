@@ -93,7 +93,7 @@ class TestRegexSearchWithTimeout:
         # Mock thread.is_alive() to return True to simulate timeout
         import threading
         original_thread = threading.Thread
-        
+
         class MockThread:
             def __init__(self, *args, **kwargs):
                 self._thread = original_thread(*args, **kwargs)
@@ -103,7 +103,7 @@ class TestRegexSearchWithTimeout:
                 self._thread.join(timeout)
             def is_alive(self):
                 return True  # Always return True to simulate timeout
-        
+
         with patch('threading.Thread', MockThread):
             with pytest.raises(TimeoutError, match="possible ReDoS attack"):
                 service._regex_search_with_timeout(r"test", "test content", timeout=0.1)
@@ -114,7 +114,7 @@ class TestRegexSearchWithTimeout:
         # Use invalid regex pattern to trigger exception in thread
         pattern = r"(?P<invalid"  # Unclosed group - will raise re.error
         content = "test"
-        
+
         with pytest.raises(Exception):
             service._regex_search_with_timeout(pattern, content, timeout=1.0)
 
