@@ -280,7 +280,7 @@ mcpContextForge:
     AUTH_ENCRYPTION_SECRET: "my-test-salt"  # pragma: allowlist secret
     BASIC_AUTH_PASSWORD: "changeme"  # pragma: allowlist secret
     PLATFORM_ADMIN_PASSWORD: "changeme"  # pragma: allowlist secret
-    REQUIRE_STRONG_SECRETS: "false"        # set true in secrets override file
+    REQUIRE_STRONG_SECRETS: "true"         # gateway refuses to start with weak/default secrets
 
 # --- Migration ---
 # Run migration as pre-install hook (Postgres already exists via PGO operator).

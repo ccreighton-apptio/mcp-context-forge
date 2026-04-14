@@ -43,10 +43,12 @@
         namespace: "{{ ocp_namespace }}"
         name: "{{ ocp_namespace }}-mcp-stack-gateway-secret"
       register: gw_secret
+      no_log: true
 
     - name: Extract JWT secret key
       ansible.builtin.set_fact:
         jwt_secret: "{{ gw_secret.resources[0].data.JWT_SECRET_KEY | b64decode }}"
+      no_log: true
 
     # Step 2: Generate JWT token
     - name: Find gateway pod
@@ -69,10 +71,12 @@
           --username admin@example.com --exp 5
           --secret "{{ jwt_secret }}"
       register: jwt_result
+      no_log: true
 
     - name: Extract token
       ansible.builtin.set_fact:
         jwt_token: "{{ jwt_result.stdout_lines[-1] }}"
+      no_log: true
 
     # Step 3: Fetch server ID
     - name: Fetch virtual server ID
@@ -82,6 +86,7 @@
         command: >
           curl -s -H "Authorization: Bearer {{ jwt_token }}" http://localhost:4444/servers
       register: servers_result
+      no_log: true
 
     - name: Parse server list
       ansible.builtin.set_fact:
